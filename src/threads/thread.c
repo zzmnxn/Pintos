@@ -548,7 +548,12 @@ thread_schedule_tail (struct thread *prev)
   if (prev != NULL && prev->status == THREAD_DYING && prev != initial_thread) 
     {
       ASSERT (prev != cur);
-      palloc_free_page (prev);
+#ifdef USERPROG
+      /* Don't free the thread if it has a parent that might still wait() on it.
+         The parent will free the thread's memory after reading its exit status. */
+      if (prev->parent == NULL)
+#endif
+        palloc_free_page (prev);
     }
 }
 
