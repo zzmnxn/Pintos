@@ -355,20 +355,49 @@ load (const char *file_name, void (**eip) (void), void **esp)
   off_t file_ofs;
   bool success = false;
   int i;
+  char *cmdline_copy = NULL;
+  char *program_name = NULL;
+  char *save_ptr;
+
+  /* TODO: parse file name
+     Parse the command line to extract the program name.
+     The file_name parameter contains the entire command line (e.g., "args-single onearg"),
+     but we need to extract only the program name for filesys_open(). */
+  
+  /* Make a copy of file_name for parsing */
+  cmdline_copy = palloc_get_page (0);
+  if (cmdline_copy == NULL)
+    goto done;
+  strlcpy (cmdline_copy, file_name, PGSIZE);
+  
+  /* Extract the first token (program name) from the command line */
+  program_name = strtok_r (cmdline_copy, " ", &save_ptr);
+  if (program_name == NULL)
+    {
+      palloc_free_page (cmdline_copy);
+      goto done;
+    }
 
   /* Allocate and activate page directory. */
   t->pagedir = pagedir_create ();
   if (t->pagedir == NULL) 
-    goto done;
+    {
+      palloc_free_page (cmdline_copy);
+      goto done;
+    }
   process_activate ();
 
-  /* Open executable file. */
-  file = filesys_open (file_name);
+  /* Open executable file using only the program name (not the entire command line). */
+  file = filesys_open (program_name);
   if (file == NULL) 
     {
-      printf ("load: %s: open failed\n", file_name);
+      printf ("load: %s: open failed\n", program_name);
+      palloc_free_page (cmdline_copy);
       goto done; 
     }
+  
+  /* Free the copy - we no longer need it since file_name will be used for setup_args */
+  palloc_free_page (cmdline_copy);
 
   /* Read and verify executable header. */
   if (file_read (file, &ehdr, sizeof ehdr) != sizeof ehdr
