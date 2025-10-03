@@ -4,6 +4,8 @@
 #include <debug.h>
 #include <list.h>
 #include <stdint.h>
+#include <stdbool.h>
+#include "threads/synch.h"
 
 /* States in a thread's life cycle. */
 enum thread_status
@@ -96,6 +98,14 @@ struct thread
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
+    struct thread *parent;              /* Parent process. */
+    struct list children;               /* List of child processes. */
+    struct list_elem child_elem;        /* List element for children list. */
+    int exit_status;                    /* Exit status. */
+    bool has_exited;                    /* Whether the process has exited. */
+    bool load_success;                  /* Whether the process loaded successfully. */
+    struct semaphore exit_sema;         /* Semaphore for exit synchronization. */
+    struct semaphore load_sema;         /* Semaphore for load completion. */
 #endif
 
     /* Owned by thread.c. */
@@ -125,6 +135,8 @@ const char *thread_name (void);
 
 void thread_exit (void) NO_RETURN;
 void thread_yield (void);
+
+struct thread *get_thread_by_tid (tid_t tid);
 
 /* Performs some operation on thread t, given auxiliary data AUX. */
 typedef void thread_action_func (struct thread *t, void *aux);

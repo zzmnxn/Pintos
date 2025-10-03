@@ -4,14 +4,30 @@
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
+#include "userprog/pagedir.h"
 #include "devices/shutdown.h"
 #include "devices/input.h"
+
+/* Type definitions for system calls */
+typedef int pid_t;
 
 static void syscall_handler (struct intr_frame *);
 static void syscall_halt (void);
 static void syscall_exit (int status);
+static pid_t syscall_exec (const char *cmd_line);
+static int syscall_wait (pid_t pid);
+static bool syscall_create (const char *file, unsigned initial_size);
+static bool syscall_remove (const char *file);
+static int syscall_open (const char *file);
+static int syscall_filesize (int fd);
+static int syscall_read (int fd, void *buffer, unsigned size);
 static int syscall_write (int fd, const void *buffer, unsigned size);
+static void syscall_seek (int fd, unsigned position);
+static unsigned syscall_tell (int fd);
+static void syscall_close (int fd);
 static bool is_valid_ptr (const void *ptr, unsigned size);
+static bool check_user_address (const void *vaddr);
+static bool check_user_string (const char *str);
 
 void
 syscall_init (void) 
@@ -24,11 +40,10 @@ syscall_handler (struct intr_frame *f)
 {
   int syscall_number;
   
-  /* Get system call number from user stack */
+  /* Get system call number from user stack with memory protection */
   if (!is_valid_ptr (f->esp, 4))
     {
-      printf ("Invalid stack pointer\n");
-      thread_exit ();
+      syscall_exit (-1);
     }
   
   syscall_number = *(int *) f->esp;
@@ -39,43 +54,232 @@ syscall_handler (struct intr_frame *f)
     case SYS_HALT:
       syscall_halt ();
       break;
+      
     case SYS_EXIT:
       if (!is_valid_ptr (f->esp + 4, 4))
         {
-          printf ("Invalid exit status pointer\n");
-          thread_exit ();
+          syscall_exit (-1);
         }
       syscall_exit (*(int *) (f->esp + 4));
       break;
+      
+    case SYS_EXEC:
+      if (!is_valid_ptr (f->esp + 4, 4))
+        {
+          syscall_exit (-1);
+        }
+      {
+        const char *cmd_line = *(const char **) (f->esp + 4);
+        if (!check_user_string (cmd_line))
+          {
+            syscall_exit (-1);
+          }
+        f->eax = syscall_exec (cmd_line);
+      }
+      break;
+      
+    case SYS_WAIT:
+      if (!is_valid_ptr (f->esp + 4, 4))
+        {
+          syscall_exit (-1);
+        }
+      f->eax = syscall_wait (*(pid_t *) (f->esp + 4));
+      break;
+      
+    case SYS_CREATE:
+      if (!is_valid_ptr (f->esp + 4, 8))
+        {
+          syscall_exit (-1);
+        }
+      {
+        const char *file = *(const char **) (f->esp + 4);
+        unsigned initial_size = *(unsigned *) (f->esp + 8);
+        if (!check_user_string (file))
+          {
+            syscall_exit (-1);
+          }
+        f->eax = syscall_create (file, initial_size);
+      }
+      break;
+      
+    case SYS_REMOVE:
+      if (!is_valid_ptr (f->esp + 4, 4))
+        {
+          syscall_exit (-1);
+        }
+      {
+        const char *file = *(const char **) (f->esp + 4);
+        if (!check_user_string (file))
+          {
+            syscall_exit (-1);
+          }
+        f->eax = syscall_remove (file);
+      }
+      break;
+      
+    case SYS_OPEN:
+      if (!is_valid_ptr (f->esp + 4, 4))
+        {
+          syscall_exit (-1);
+        }
+      {
+        const char *file = *(const char **) (f->esp + 4);
+        if (!check_user_string (file))
+          {
+            syscall_exit (-1);
+          }
+        f->eax = syscall_open (file);
+      }
+      break;
+      
+    case SYS_FILESIZE:
+      if (!is_valid_ptr (f->esp + 4, 4))
+        {
+          syscall_exit (-1);
+        }
+      f->eax = syscall_filesize (*(int *) (f->esp + 4));
+      break;
+      
+    case SYS_READ:
+      if (!is_valid_ptr (f->esp + 4, 12))
+        {
+          syscall_exit (-1);
+        }
+      {
+        int fd = *(int *) (f->esp + 4);
+        void *buffer = *(void **) (f->esp + 8);
+        unsigned size = *(unsigned *) (f->esp + 12);
+        if (!is_valid_ptr (buffer, size))
+          {
+            syscall_exit (-1);
+          }
+        f->eax = syscall_read (fd, buffer, size);
+      }
+      break;
+      
     case SYS_WRITE:
       if (!is_valid_ptr (f->esp + 4, 12))
         {
-          printf ("Invalid write arguments\n");
-          thread_exit ();
+          syscall_exit (-1);
         }
       {
         int fd = *(int *) (f->esp + 4);
         const void *buffer = *(void **) (f->esp + 8);
         unsigned size = *(unsigned *) (f->esp + 12);
+        if (!is_valid_ptr (buffer, size))
+          {
+            syscall_exit (-1);
+          }
         f->eax = syscall_write (fd, buffer, size);
       }
       break;
+      
+    case SYS_SEEK:
+      if (!is_valid_ptr (f->esp + 4, 8))
+        {
+          syscall_exit (-1);
+        }
+      {
+        int fd = *(int *) (f->esp + 4);
+        unsigned position = *(unsigned *) (f->esp + 8);
+        syscall_seek (fd, position);
+      }
+      break;
+      
+    case SYS_TELL:
+      if (!is_valid_ptr (f->esp + 4, 4))
+        {
+          syscall_exit (-1);
+        }
+      f->eax = syscall_tell (*(int *) (f->esp + 4));
+      break;
+      
+    case SYS_CLOSE:
+      if (!is_valid_ptr (f->esp + 4, 4))
+        {
+          syscall_exit (-1);
+        }
+      syscall_close (*(int *) (f->esp + 4));
+      break;
+      
     default:
       printf ("Unknown system call: %d\n", syscall_number);
-      thread_exit ();
+      syscall_exit (-1);
     }
 }
 
-/* Check if a pointer is valid for user access */
+/* Check if a single user virtual address is valid */
+static bool
+check_user_address (const void *vaddr)
+{
+  struct thread *cur = thread_current ();
+  
+  /* Check for NULL pointer */
+  if (vaddr == NULL)
+    return false;
+    
+  /* Check if address is in user space */
+  if (!is_user_vaddr (vaddr))
+    return false;
+    
+  /* Check if the page is mapped */
+  if (pagedir_get_page (cur->pagedir, vaddr) == NULL)
+    return false;
+    
+  return true;
+}
+
+/* Check if a user string is valid (null-terminated) */
+static bool
+check_user_string (const char *str)
+{
+  if (!check_user_address (str))
+    return false;
+    
+  /* Check if string is null-terminated within valid memory */
+  for (const char *p = str; ; p++)
+    {
+      if (!check_user_address (p))
+        return false;
+      if (*p == '\0')
+        break;
+    }
+    
+  return true;
+}
+
+/* Check if a pointer range is valid for user access */
 static bool
 is_valid_ptr (const void *ptr, unsigned size)
 {
+  const char *start = (const char *) ptr;
+  const char *end = start + size;
+  
+  /* Check for NULL pointer */
+  if (ptr == NULL)
+    return false;
+    
+  /* Check if address is in user space */
   if (!is_user_vaddr (ptr))
     return false;
-  if (ptr + size < ptr)  /* Check for overflow */
+    
+  /* Check for overflow */
+  if (end < start)
     return false;
-  if (ptr + size > PHYS_BASE)
+    
+  /* Check if range extends beyond user space */
+  if (end > (const char *) PHYS_BASE)
     return false;
+    
+  /* Check if all pages in the range are mapped */
+  for (const char *p = (const char *) pg_round_down (start); 
+       p < end; 
+       p += PGSIZE)
+    {
+      if (!check_user_address (p))
+        return false;
+    }
+    
   return true;
 }
 
@@ -91,15 +295,107 @@ static void
 syscall_exit (int status)
 {
   struct thread *cur = thread_current ();
+  
+  /* Set exit status and mark as exited */
+  cur->exit_status = status;
+  cur->has_exited = true;
+  
+  /* Print exit message */
   printf ("%s: exit(%d)\n", cur->name, status);
+  
+  /* Call thread_exit which will trigger process_exit */
   thread_exit ();
+}
+
+/* Start another process */
+static pid_t
+syscall_exec (const char *cmd_line)
+{
+  return process_execute (cmd_line);
+}
+
+/* Wait for a child process to die */
+static int
+syscall_wait (pid_t pid)
+{
+  return process_wait (pid);
+}
+
+/* Create a file */
+static bool
+syscall_create (const char *file, unsigned initial_size)
+{
+  /* TODO: Implement file creation */
+  printf ("create: %s, size %u (not implemented)\n", file, initial_size);
+  return false;
+}
+
+/* Delete a file */
+static bool
+syscall_remove (const char *file)
+{
+  /* TODO: Implement file removal */
+  printf ("remove: %s (not implemented)\n", file);
+  return false;
+}
+
+/* Open a file */
+static int
+syscall_open (const char *file)
+{
+  /* TODO: Implement file opening */
+  printf ("open: %s (not implemented)\n", file);
+  return -1;
+}
+
+/* Obtain a file's size */
+static int
+syscall_filesize (int fd)
+{
+  /* TODO: Implement file size retrieval */
+  printf ("filesize: %d (not implemented)\n", fd);
+  return -1;
+}
+
+/* Read from a file */
+static int
+syscall_read (int fd, void *buffer, unsigned size)
+{
+  if (fd == 0)  /* stdin */
+    {
+      if (!is_valid_ptr (buffer, size))
+        return -1;
+      
+      /* Read from input device */
+      unsigned bytes_read = 0;
+      char *buf = (char *) buffer;
+      
+      while (bytes_read < size)
+        {
+          char c = input_getc ();
+          buf[bytes_read] = c;
+          bytes_read++;
+          
+          /* Stop reading on newline or EOF */
+          if (c == '\n' || c == '\0')
+            break;
+        }
+      
+      return bytes_read;
+    }
+  else
+    {
+      /* TODO: Implement file reading */
+      printf ("read: fd %d, size %u (not implemented)\n", fd, size);
+      return -1;
+    }
 }
 
 /* Write to a file descriptor */
 static int
 syscall_write (int fd, const void *buffer, unsigned size)
 {
-  if (fd == 1)  /* stdout */
+  if (fd == 1 || fd == 2)  /* stdout or stderr */
     {
       if (!is_valid_ptr (buffer, size))
         return -1;
@@ -107,5 +403,34 @@ syscall_write (int fd, const void *buffer, unsigned size)
       return size;
     }
   else
-    return -1;  /* Unsupported file descriptor */
+    {
+      /* TODO: Implement file writing */
+      printf ("write: fd %d, size %u (not implemented)\n", fd, size);
+      return -1;
+    }
+}
+
+/* Change position in a file */
+static void
+syscall_seek (int fd, unsigned position)
+{
+  /* TODO: Implement file seeking */
+  printf ("seek: fd %d, position %u (not implemented)\n", fd, position);
+}
+
+/* Report current position in a file */
+static unsigned
+syscall_tell (int fd)
+{
+  /* TODO: Implement file position reporting */
+  printf ("tell: fd %d (not implemented)\n", fd);
+  return -1;
+}
+
+/* Close a file */
+static void
+syscall_close (int fd)
+{
+  /* TODO: Implement file closing */
+  printf ("close: fd %d (not implemented)\n", fd);
 }

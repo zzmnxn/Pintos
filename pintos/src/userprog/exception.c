@@ -148,14 +148,29 @@ page_fault (struct intr_frame *f)
   write = (f->error_code & PF_W) != 0;
   user = (f->error_code & PF_U) != 0;
 
-  /* To implement virtual memory, delete the rest of the function
-     body, and replace it with code that brings in the page to
-     which fault_addr refers. */
-  printf ("Page fault at %p: %s error %s page in %s context.\n",
-          fault_addr,
-          not_present ? "not present" : "rights violation",
-          write ? "writing" : "reading",
-          user ? "user" : "kernel");
-  kill (f);
+  /* If page fault occurred in user mode, terminate the process with exit(-1) */
+  if (user)
+    {
+      printf ("Page fault at %p: %s error %s page in %s context.\n",
+              fault_addr,
+              not_present ? "not present" : "rights violation",
+              write ? "writing" : "reading",
+              user ? "user" : "kernel");
+      
+      /* Terminate the current process with exit status -1 */
+      struct thread *cur = thread_current ();
+      printf ("%s: exit(-1)\n", cur->name);
+      thread_exit ();
+    }
+  else
+    {
+      /* Kernel page fault - this should not happen */
+      printf ("Page fault at %p: %s error %s page in %s context.\n",
+              fault_addr,
+              not_present ? "not present" : "rights violation",
+              write ? "writing" : "reading",
+              user ? "user" : "kernel");
+      PANIC ("Kernel bug - unexpected page fault in kernel");
+    }
 }
 

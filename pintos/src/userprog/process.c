@@ -16,6 +16,7 @@
 #include "threads/interrupt.h"
 #include "threads/palloc.h"
 #include "threads/thread.h"
+#include "threads/synch.h"
 #include "threads/vaddr.h"
 
 static thread_func start_process NO_RETURN;
@@ -29,19 +30,71 @@ tid_t
 process_execute (const char *file_name) 
 {
   char *fn_copy;
+  char *program_name;
   tid_t tid;
+  struct thread *cur = thread_current ();
+  struct thread *child;
 
-  /* Make a copy of FILE_NAME.
+  /* Extract program name from command line */
+  program_name = palloc_get_page (0);
+  if (program_name == NULL)
+    return TID_ERROR;
+  
+  /* Find first space to extract program name */
+  const char *space = strchr (file_name, ' ');
+  if (space != NULL)
+    {
+      size_t name_len = space - file_name;
+      if (name_len >= PGSIZE)
+        name_len = PGSIZE - 1;
+      strlcpy (program_name, file_name, name_len + 1);
+    }
+  else
+    {
+      strlcpy (program_name, file_name, PGSIZE);
+    }
+
+  /* Make a copy of FILE_NAME for start_process.
      Otherwise there's a race between the caller and load(). */
   fn_copy = palloc_get_page (0);
   if (fn_copy == NULL)
-    return TID_ERROR;
+    {
+      palloc_free_page (program_name);
+      return TID_ERROR;
+    }
   strlcpy (fn_copy, file_name, PGSIZE);
 
-  /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create (file_name, PRI_DEFAULT, start_process, fn_copy);
+  /* Create a new thread to execute program. */
+  tid = thread_create (program_name, PRI_DEFAULT, start_process, fn_copy);
   if (tid == TID_ERROR)
-    palloc_free_page (fn_copy); 
+    {
+      palloc_free_page (fn_copy);
+      palloc_free_page (program_name);
+      return TID_ERROR;
+    }
+    
+  /* Set up parent-child relationship */
+  child = get_thread_by_tid (tid);
+  if (child != NULL)
+    {
+      child->parent = cur;
+      list_push_back (&cur->children, &child->child_elem);
+    }
+    
+  /* Wait for child to finish loading */
+  if (child != NULL)
+    sema_down (&child->load_sema);
+    
+  /* Check if child loaded successfully */
+  if (child != NULL && !child->load_success)
+    {
+      /* Child failed to load, remove from children list */
+      list_remove (&child->child_elem);
+      palloc_free_page (program_name);
+      return TID_ERROR;
+    }
+    
+  palloc_free_page (program_name);
   return tid;
 }
 
@@ -53,6 +106,7 @@ start_process (void *file_name_)
   char *file_name = file_name_;
   struct intr_frame if_;
   bool success;
+  struct thread *cur = thread_current ();
 
   /* Initialize interrupt frame and load executable. */
   memset (&if_, 0, sizeof if_);
@@ -60,6 +114,10 @@ start_process (void *file_name_)
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
   success = load (file_name, &if_.eip, &if_.esp);
+
+  /* Set load success status and signal parent */
+  cur->load_success = success;
+  sema_up (&cur->load_sema);
 
   /* If load failed, quit. */
   palloc_free_page (file_name);
@@ -86,9 +144,41 @@ start_process (void *file_name_)
    This function will be implemented in problem 2-2.  For now, it
    does nothing. */
 int
-process_wait (tid_t child_tid UNUSED) 
+process_wait (tid_t child_tid) 
 {
-  return -1;
+  struct thread *cur = thread_current ();
+  struct thread *child = get_thread_by_tid (child_tid);
+  struct list_elem *e;
+  int exit_status;
+  
+  /* Check if child exists and is actually a child of current process */
+  if (child == NULL || child->parent != cur)
+    return -1;
+    
+  /* Check if child has already been waited on */
+  for (e = list_begin (&cur->children); e != list_end (&cur->children); e = list_next (e))
+    {
+      struct thread *t = list_entry (e, struct thread, child_elem);
+      if (t->tid == child_tid)
+        break;
+    }
+    
+  if (e == list_end (&cur->children))
+    return -1;  /* Child not found in children list */
+    
+  /* Remove child from children list to prevent duplicate waits */
+  list_remove (e);
+  
+  /* Wait for child to exit. 
+     If the child has already exited, it will have done sema_up() on its exit_sema,
+     so this sema_down() will not block. If the child hasn't exited yet, this will
+     block until the child calls sema_up() in process_exit(). */
+  sema_down (&child->exit_sema);
+    
+  /* Read child's exit status */
+  exit_status = child->exit_status;
+  
+  return exit_status;
 }
 
 /* Free the current process's resources. */
@@ -97,6 +187,19 @@ process_exit (void)
 {
   struct thread *cur = thread_current ();
   uint32_t *pd;
+
+  /* Set exit status if not already set (e.g., killed by kernel) */
+  if (!cur->has_exited)
+    {
+      cur->exit_status = -1;
+      cur->has_exited = true;
+      /* Print exit message if not already printed by syscall_exit */
+      printf ("%s: exit(%d)\n", cur->name, cur->exit_status);
+    }
+  
+  /* Signal parent process that we're exiting by signaling our own exit_sema.
+     The parent waits on child->exit_sema in process_wait(). */
+  sema_up (&cur->exit_sema);
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
@@ -215,20 +318,49 @@ load (const char *file_name, void (**eip) (void), void **esp)
   off_t file_ofs;
   bool success = false;
   int i;
+  char *cmdline_copy = NULL;
+  char *program_name = NULL;
+  char *save_ptr;
+
+  /* TODO: parse file name
+     Parse the command line to extract the program name.
+     The file_name parameter contains the entire command line (e.g., "args-single onearg"),
+     but we need to extract only the program name for filesys_open(). */
+  
+  /* Make a copy of file_name for parsing */
+  cmdline_copy = palloc_get_page (0);
+  if (cmdline_copy == NULL)
+    goto done;
+  strlcpy (cmdline_copy, file_name, PGSIZE);
+  
+  /* Extract the first token (program name) from the command line */
+  program_name = strtok_r (cmdline_copy, " ", &save_ptr);
+  if (program_name == NULL)
+    {
+      palloc_free_page (cmdline_copy);
+      goto done;
+    }
 
   /* Allocate and activate page directory. */
   t->pagedir = pagedir_create ();
   if (t->pagedir == NULL) 
-    goto done;
+    {
+      palloc_free_page (cmdline_copy);
+      goto done;
+    }
   process_activate ();
 
-  /* Open executable file. */
-  file = filesys_open (file_name);
+  /* Open executable file using only the program name (not the entire command line). */
+  file = filesys_open (program_name);
   if (file == NULL) 
     {
-      printf ("load: %s: open failed\n", file_name);
+      printf ("load: %s: open failed\n", program_name);
+      palloc_free_page (cmdline_copy);
       goto done; 
     }
+  
+  /* Free the copy - we no longer need it since file_name will be used for setup_args */
+  palloc_free_page (cmdline_copy);
 
   /* Read and verify executable header. */
   if (file_read (file, &ehdr, sizeof ehdr) != sizeof ehdr
@@ -457,31 +589,19 @@ setup_args (const char *cmdline, void **esp)
   char *cmdline_copy;
   char *save_ptr;
   char *token;
-  char **argv;
+  char **argv;  /* Array to store argument strings (in kernel memory) */
+  void **argv_addrs;  /* Array to store addresses of args on user stack */
   int argc = 0;
   int i;
+  char *stack_ptr;
   
-  /* Make a copy of cmdline for parsing */
+  /* Make a copy of cmdline for parsing (use kernel heap memory) */
   cmdline_copy = palloc_get_page (0);
   if (cmdline_copy == NULL)
     return false;
   strlcpy (cmdline_copy, cmdline, PGSIZE);
   
-  /* Count arguments */
-  token = strtok_r (cmdline_copy, " ", &save_ptr);
-  while (token != NULL)
-    {
-      argc++;
-      token = strtok_r (NULL, " ", &save_ptr);
-    }
-  
-  if (argc == 0)
-    {
-      palloc_free_page (cmdline_copy);
-      return true;  /* No arguments to process */
-    }
-  
-  /* Allocate space for argv array */
+  /* First pass: count arguments and store them in an array */
   argv = palloc_get_page (0);
   if (argv == NULL)
     {
@@ -489,67 +609,93 @@ setup_args (const char *cmdline, void **esp)
       return false;
     }
   
-  /* Parse arguments again and store in argv */
-  strlcpy (cmdline_copy, cmdline, PGSIZE);
-  save_ptr = NULL;
   token = strtok_r (cmdline_copy, " ", &save_ptr);
-  i = 0;
-  while (token != NULL && i < argc)
+  while (token != NULL)
     {
-      argv[i] = token;
-      i++;
+      /* Check if we have too many arguments */
+      if (argc >= PGSIZE / sizeof (char *))
+        {
+          palloc_free_page (cmdline_copy);
+          palloc_free_page (argv);
+          return false;
+        }
+      argv[argc] = token;
+      argc++;
       token = strtok_r (NULL, " ", &save_ptr);
     }
   
-  /* Set up the stack according to 80x86 calling convention */
-  uint32_t *stack_ptr = (uint32_t *) *esp;
+  if (argc == 0)
+    {
+      palloc_free_page (cmdline_copy);
+      palloc_free_page (argv);
+      return true;  /* No arguments to process */
+    }
   
-  /* 1. Push argument strings onto stack (in reverse order) */
+  /* Allocate space to store user stack addresses of arguments */
+  argv_addrs = palloc_get_page (0);
+  if (argv_addrs == NULL)
+    {
+      palloc_free_page (cmdline_copy);
+      palloc_free_page (argv);
+      return false;
+    }
+  
+  /* Set up the user stack according to 80x86 calling convention */
+  stack_ptr = (char *) *esp;
+  
+  /* Step 1: Push argument strings onto stack (from last to first)
+     and record their addresses */
   for (i = argc - 1; i >= 0; i--)
     {
-      int len = strlen (argv[i]) + 1;
-      /* Align stack pointer to 4-byte boundary */
-      stack_ptr = (uint32_t *) ((uintptr_t) stack_ptr - len);
-      stack_ptr = (uint32_t *) ((uintptr_t) stack_ptr & ~3);
-      
-      /* Copy argument string to stack */
+      size_t len = strlen (argv[i]) + 1;  /* Include null terminator */
+      stack_ptr -= len;
       memcpy (stack_ptr, argv[i], len);
-      argv[i] = (char *) stack_ptr;  /* Update argv[i] to point to stack location */
+      argv_addrs[i] = stack_ptr;
     }
   
-  /* 2. Push NULL pointer sentinel */
-  stack_ptr--;
-  *stack_ptr = 0;
+  /* Step 2: Word-align the stack pointer (round down to multiple of 4) */
+  stack_ptr = (char *) ((uintptr_t) stack_ptr & ~3);
   
-  /* 3. Push argument addresses (in reverse order) */
+  /* Step 3: Push NULL pointer sentinel (argv[argc]) */
+  stack_ptr -= sizeof (char *);
+  *(char **) stack_ptr = NULL;
+  
+  /* Step 4: Push pointers to argument strings (argv[argc-1] to argv[0]) */
   for (i = argc - 1; i >= 0; i--)
     {
-      stack_ptr--;
-      *stack_ptr = (uint32_t) argv[i];
+      stack_ptr -= sizeof (char *);
+      *(char **) stack_ptr = argv_addrs[i];
     }
   
-  /* 4. Push argv pointer */
-  stack_ptr--;
-  *stack_ptr = (uint32_t) (stack_ptr + 1);
+  /* Step 5: Push argv (pointer to argv[0]) */
+  char **argv_ptr = (char **) stack_ptr;
+  stack_ptr -= sizeof (char **);
+  *(char ***) stack_ptr = argv_ptr;
   
-  /* 5. Push argc */
-  stack_ptr--;
-  *stack_ptr = argc;
+  /* Step 6: Push argc */
+  stack_ptr -= sizeof (int);
+  *(int *) stack_ptr = argc;
   
-  /* 6. Push fake return address */
-  stack_ptr--;
-  *stack_ptr = 0;
+  /* Step 7: Push fake return address */
+  stack_ptr -= sizeof (void *);
+  *(void **) stack_ptr = NULL;
   
   /* Update esp to point to the new stack top */
   *esp = stack_ptr;
   
-  /* Debug: Print stack contents for verification */
-  // printf ("Stack setup for %d arguments:\n", argc);
-  // hex_dump ((uintptr_t) *esp, *esp, (uintptr_t) PHYS_BASE - (uintptr_t) *esp, true);
+  /* Verify stack pointer is still in valid range */
+  if (*esp < (void *) 0x08048000 || *esp >= (void *) PHYS_BASE)
+    {
+      palloc_free_page (cmdline_copy);
+      palloc_free_page (argv);
+      palloc_free_page (argv_addrs);
+      return false;
+    }
   
-  /* Free allocated pages */
+  /* Free allocated kernel pages */
   palloc_free_page (cmdline_copy);
   palloc_free_page (argv);
+  palloc_free_page (argv_addrs);
   
   return true;
 }
@@ -573,3 +719,4 @@ install_page (void *upage, void *kpage, bool writable)
   return (pagedir_get_page (t->pagedir, upage) == NULL
           && pagedir_set_page (t->pagedir, upage, kpage, writable));
 }
+
