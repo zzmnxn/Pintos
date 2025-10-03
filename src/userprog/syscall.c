@@ -296,15 +296,14 @@ syscall_exit (int status)
 {
   struct thread *cur = thread_current ();
   
-  /* Set exit status */
+  /* Set exit status and mark as exited */
   cur->exit_status = status;
   cur->has_exited = true;
   
-  /* Signal parent process if it exists */
-  if (cur->parent != NULL && cur->parent->exit_sema != NULL)
-    sema_up (cur->parent->exit_sema);
-  
+  /* Print exit message */
   printf ("%s: exit(%d)\n", cur->name, status);
+  
+  /* Call thread_exit which will trigger process_exit */
   thread_exit ();
 }
 

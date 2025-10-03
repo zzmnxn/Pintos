@@ -470,8 +470,8 @@ init_thread (struct thread *t, const char *name, int priority)
   t->exit_status = -1;
   t->has_exited = false;
   t->load_success = false;
-  t->exit_sema = NULL;  /* Will be allocated when needed */
-  t->load_sema = NULL;  /* Will be allocated when needed */
+  sema_init (&t->exit_sema, 0);  /* Initialize exit synchronization semaphore */
+  sema_init (&t->load_sema, 0);  /* Initialize load completion semaphore */
 #endif
 
   old_level = intr_disable ();

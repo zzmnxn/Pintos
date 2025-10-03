@@ -5,9 +5,7 @@
 #include <list.h>
 #include <stdint.h>
 #include <stdbool.h>
-
-/* Forward declarations */
-struct semaphore;
+#include "threads/synch.h"
 
 /* States in a thread's life cycle. */
 enum thread_status
@@ -106,8 +104,8 @@ struct thread
     int exit_status;                    /* Exit status. */
     bool has_exited;                    /* Whether the process has exited. */
     bool load_success;                  /* Whether the process loaded successfully. */
-    struct semaphore *exit_sema;        /* Semaphore for exit synchronization. */
-    struct semaphore *load_sema;        /* Semaphore for load completion. */
+    struct semaphore exit_sema;         /* Semaphore for exit synchronization. */
+    struct semaphore load_sema;         /* Semaphore for load completion. */
 #endif
 
     /* Owned by thread.c. */

@@ -79,26 +79,11 @@ process_execute (const char *file_name)
     {
       child->parent = cur;
       list_push_back (&cur->children, &child->child_elem);
-      
-      /* Allocate semaphores for child if not already allocated */
-      if (child->exit_sema == NULL)
-        {
-          child->exit_sema = malloc (sizeof (struct semaphore));
-          if (child->exit_sema != NULL)
-            sema_init (child->exit_sema, 0);
-        }
-        
-      if (child->load_sema == NULL)
-        {
-          child->load_sema = malloc (sizeof (struct semaphore));
-          if (child->load_sema != NULL)
-            sema_init (child->load_sema, 0);
-        }
     }
     
   /* Wait for child to finish loading */
-  if (child != NULL && child->load_sema != NULL)
-    sema_down (child->load_sema);
+  if (child != NULL)
+    sema_down (&child->load_sema);
     
   /* Check if child loaded successfully */
   if (child != NULL && !child->load_success)
@@ -132,8 +117,7 @@ start_process (void *file_name_)
 
   /* Set load success status and signal parent */
   cur->load_success = success;
-  if (cur->load_sema != NULL)
-    sema_up (cur->load_sema);
+  sema_up (&cur->load_sema);
 
   /* If load failed, quit. */
   palloc_free_page (file_name);
@@ -182,27 +166,17 @@ process_wait (tid_t child_tid)
   if (e == list_end (&cur->children))
     return -1;  /* Child not found in children list */
     
-  /* Remove child from children list */
+  /* Remove child from children list to prevent duplicate waits */
   list_remove (e);
   
-  /* Wait for child to exit */
-  if (!child->has_exited && child->exit_sema != NULL)
-    sema_down (child->exit_sema);
+  /* Wait for child to exit. 
+     If the child has already exited, it will have done sema_up() on its exit_sema,
+     so this sema_down() will not block. If the child hasn't exited yet, this will
+     block until the child calls sema_up() in process_exit(). */
+  sema_down (&child->exit_sema);
     
+  /* Read child's exit status */
   exit_status = child->exit_status;
-  
-  /* Free child's semaphores */
-  if (child->exit_sema != NULL)
-    {
-      free (child->exit_sema);
-      child->exit_sema = NULL;
-    }
-    
-  if (child->load_sema != NULL)
-    {
-      free (child->load_sema);
-      child->load_sema = NULL;
-    }
   
   return exit_status;
 }
@@ -214,29 +188,18 @@ process_exit (void)
   struct thread *cur = thread_current ();
   uint32_t *pd;
 
-  /* Set exit status if not already set */
+  /* Set exit status if not already set (e.g., killed by kernel) */
   if (!cur->has_exited)
     {
       cur->exit_status = -1;
       cur->has_exited = true;
-      
-      /* Signal parent process if it exists */
-      if (cur->parent != NULL && cur->parent->exit_sema != NULL)
-        sema_up (cur->parent->exit_sema);
+      /* Print exit message if not already printed by syscall_exit */
+      printf ("%s: exit(%d)\n", cur->name, cur->exit_status);
     }
-    
-  /* Free allocated semaphores */
-  if (cur->exit_sema != NULL)
-    {
-      free (cur->exit_sema);
-      cur->exit_sema = NULL;
-    }
-    
-  if (cur->load_sema != NULL)
-    {
-      free (cur->load_sema);
-      cur->load_sema = NULL;
-    }
+  
+  /* Signal parent process that we're exiting by signaling our own exit_sema.
+     The parent waits on child->exit_sema in process_wait(). */
+  sema_up (&cur->exit_sema);
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
@@ -626,21 +589,37 @@ setup_args (const char *cmdline, void **esp)
   char *cmdline_copy;
   char *save_ptr;
   char *token;
-  char **arg_ptrs;  /* Array to store pointers to argument strings on stack */
-  char (*stack_strings)[PGSIZE];  /* Array to store actual argument strings */
+  char **argv;  /* Array to store argument strings (in kernel memory) */
+  void **argv_addrs;  /* Array to store addresses of args on user stack */
   int argc = 0;
   int i;
+  char *stack_ptr;
   
-  /* Make a copy of cmdline for parsing */
+  /* Make a copy of cmdline for parsing (use kernel heap memory) */
   cmdline_copy = palloc_get_page (0);
   if (cmdline_copy == NULL)
     return false;
   strlcpy (cmdline_copy, cmdline, PGSIZE);
   
-  /* Count arguments */
+  /* First pass: count arguments and store them in an array */
+  argv = palloc_get_page (0);
+  if (argv == NULL)
+    {
+      palloc_free_page (cmdline_copy);
+      return false;
+    }
+  
   token = strtok_r (cmdline_copy, " ", &save_ptr);
   while (token != NULL)
     {
+      /* Check if we have too many arguments */
+      if (argc >= PGSIZE / sizeof (char *))
+        {
+          palloc_free_page (cmdline_copy);
+          palloc_free_page (argv);
+          return false;
+        }
+      argv[argc] = token;
       argc++;
       token = strtok_r (NULL, " ", &save_ptr);
     }
@@ -648,88 +627,75 @@ setup_args (const char *cmdline, void **esp)
   if (argc == 0)
     {
       palloc_free_page (cmdline_copy);
+      palloc_free_page (argv);
       return true;  /* No arguments to process */
     }
   
-  /* Allocate space for argument string pointers and actual strings */
-  arg_ptrs = palloc_get_page (0);
-  stack_strings = palloc_get_page (0);
-  if (arg_ptrs == NULL || stack_strings == NULL)
+  /* Allocate space to store user stack addresses of arguments */
+  argv_addrs = palloc_get_page (0);
+  if (argv_addrs == NULL)
     {
       palloc_free_page (cmdline_copy);
-      if (arg_ptrs) palloc_free_page (arg_ptrs);
-      if (stack_strings) palloc_free_page (stack_strings);
+      palloc_free_page (argv);
       return false;
     }
   
-  /* Parse arguments again and store strings */
-  strlcpy (cmdline_copy, cmdline, PGSIZE);
-  save_ptr = NULL;
-  token = strtok_r (cmdline_copy, " ", &save_ptr);
-  i = 0;
-  while (token != NULL && i < argc)
-    {
-      strlcpy (stack_strings[i], token, PGSIZE);
-      i++;
-      token = strtok_r (NULL, " ", &save_ptr);
-    }
+  /* Set up the user stack according to 80x86 calling convention */
+  stack_ptr = (char *) *esp;
   
-  /* Set up the stack according to 80x86 calling convention */
-  char *stack_ptr = (char *) *esp;
-  
-  /* 1. Push argument strings onto stack (from last to first) */
+  /* Step 1: Push argument strings onto stack (from last to first)
+     and record their addresses */
   for (i = argc - 1; i >= 0; i--)
     {
-      int len = strlen ((char *) stack_strings[i]) + 1;  /* +1 for null terminator */
-      
-      /* Move stack pointer down and align to word boundary */
+      size_t len = strlen (argv[i]) + 1;  /* Include null terminator */
       stack_ptr -= len;
-      stack_ptr = (char *) ((uintptr_t) stack_ptr & ~3);
-      
-      /* Copy argument string to stack */
-      memcpy (stack_ptr, (char *) stack_strings[i], len);
-      
-      /* Store pointer to this string on stack */
-      arg_ptrs[i] = stack_ptr;
+      memcpy (stack_ptr, argv[i], len);
+      argv_addrs[i] = stack_ptr;
     }
   
-  /* 2. Word-align stack pointer */
+  /* Step 2: Word-align the stack pointer (round down to multiple of 4) */
   stack_ptr = (char *) ((uintptr_t) stack_ptr & ~3);
   
-  /* 3. Push NULL pointer sentinel */
-  stack_ptr -= 4;
-  *(uint32_t *) stack_ptr = 0;
+  /* Step 3: Push NULL pointer sentinel (argv[argc]) */
+  stack_ptr -= sizeof (char *);
+  *(char **) stack_ptr = NULL;
   
-  /* 4. Push argument addresses (argv[n], argv[n-1], ..., argv[0]) */
+  /* Step 4: Push pointers to argument strings (argv[argc-1] to argv[0]) */
   for (i = argc - 1; i >= 0; i--)
     {
-      stack_ptr -= 4;
-      *(uint32_t *) stack_ptr = (uint32_t) arg_ptrs[i];
+      stack_ptr -= sizeof (char *);
+      *(char **) stack_ptr = argv_addrs[i];
     }
   
-  /* 5. Push argv pointer (points to argv[0]) */
-  stack_ptr -= 4;
-  *(uint32_t *) stack_ptr = (uint32_t) (stack_ptr + 4);
+  /* Step 5: Push argv (pointer to argv[0]) */
+  char **argv_ptr = (char **) stack_ptr;
+  stack_ptr -= sizeof (char **);
+  *(char ***) stack_ptr = argv_ptr;
   
-  /* 6. Push argc */
-  stack_ptr -= 4;
-  *(uint32_t *) stack_ptr = argc;
+  /* Step 6: Push argc */
+  stack_ptr -= sizeof (int);
+  *(int *) stack_ptr = argc;
   
-  /* 7. Push fake return address */
-  stack_ptr -= 4;
-  *(uint32_t *) stack_ptr = 0;
+  /* Step 7: Push fake return address */
+  stack_ptr -= sizeof (void *);
+  *(void **) stack_ptr = NULL;
   
   /* Update esp to point to the new stack top */
   *esp = stack_ptr;
   
-  /* Debug: Print stack contents for verification */
-  // printf ("Stack setup for %d arguments:\n", argc);
-  // hex_dump ((uintptr_t) *esp, *esp, (uintptr_t) PHYS_BASE - (uintptr_t) *esp, true);
+  /* Verify stack pointer is still in valid range */
+  if (*esp < (void *) 0x08048000 || *esp >= (void *) PHYS_BASE)
+    {
+      palloc_free_page (cmdline_copy);
+      palloc_free_page (argv);
+      palloc_free_page (argv_addrs);
+      return false;
+    }
   
-  /* Free allocated pages */
+  /* Free allocated kernel pages */
   palloc_free_page (cmdline_copy);
-  palloc_free_page (arg_ptrs);
-  palloc_free_page (stack_strings);
+  palloc_free_page (argv);
+  palloc_free_page (argv_addrs);
   
   return true;
 }
