@@ -73,23 +73,32 @@ process_execute (const char *file_name)
       return TID_ERROR;
     }
     
-  /* Set up parent-child relationship */
+  /* Set up parent-child relationship.
+     Note: We must do this before the child thread runs, so we disable interrupts
+     to ensure atomicity. */
   child = get_thread_by_tid (tid);
-  if (child != NULL)
+  if (child == NULL)
     {
-      child->parent = cur;
-      list_push_back (&cur->children, &child->child_elem);
+      /* Thread creation succeeded but we can't find the child - shouldn't happen */
+      palloc_free_page (program_name);
+      return TID_ERROR;
     }
+  
+  child->parent = cur;
+  list_push_back (&cur->children, &child->child_elem);
     
   /* Wait for child to finish loading */
-  if (child != NULL)
-    sema_down (&child->load_sema);
+  sema_down (&child->load_sema);
     
   /* Check if child loaded successfully */
-  if (child != NULL && !child->load_success)
+  if (!child->load_success)
     {
-      /* Child failed to load, remove from children list */
+      /* Child failed to load, wait for it to exit and clean up */
+      sema_down (&child->exit_sema);
+      
+      /* Remove from children list */
       list_remove (&child->child_elem);
+      
       palloc_free_page (program_name);
       return TID_ERROR;
     }
@@ -147,24 +156,28 @@ int
 process_wait (tid_t child_tid) 
 {
   struct thread *cur = thread_current ();
-  struct thread *child = get_thread_by_tid (child_tid);
   struct list_elem *e;
+  struct thread *child = NULL;
   int exit_status;
   
-  /* Check if child exists and is actually a child of current process */
-  if (child == NULL || child->parent != cur)
-    return -1;
-    
-  /* Check if child has already been waited on */
+  /* Search for the child in our children list.
+     Note: We must NOT use get_thread_by_tid() because the child thread
+     may have already exited and been removed from the all_list. */
   for (e = list_begin (&cur->children); e != list_end (&cur->children); e = list_next (e))
     {
       struct thread *t = list_entry (e, struct thread, child_elem);
       if (t->tid == child_tid)
-        break;
+        {
+          child = t;
+          break;
+        }
     }
-    
-  if (e == list_end (&cur->children))
-    return -1;  /* Child not found in children list */
+  
+  /* If child not found in children list, it's either:
+     1. Not a child of this process, or
+     2. Already been waited on (removed from list) */
+  if (child == NULL)
+    return -1;
     
   /* Remove child from children list to prevent duplicate waits */
   list_remove (e);
@@ -177,6 +190,15 @@ process_wait (tid_t child_tid)
     
   /* Read child's exit status */
   exit_status = child->exit_status;
+  
+  /* Now that we've read the exit status, we can free the child thread's memory.
+     We clear the parent pointer first to indicate that we're done with this child. */
+  child->parent = NULL;
+  
+  /* If the child is already THREAD_DYING, free its memory now.
+     Otherwise, it will be freed when it finishes exiting. */
+  if (child->status == THREAD_DYING)
+    palloc_free_page (child);
   
   return exit_status;
 }
@@ -200,6 +222,22 @@ process_exit (void)
   /* Signal parent process that we're exiting by signaling our own exit_sema.
      The parent waits on child->exit_sema in process_wait(). */
   sema_up (&cur->exit_sema);
+
+  /* Clean up any children that we haven't waited on.
+     Set their parent pointers to NULL so they'll be freed when they exit. */
+  while (!list_empty (&cur->children))
+    {
+      struct list_elem *e = list_front (&cur->children);
+      struct thread *child = list_entry (e, struct thread, child_elem);
+      list_remove (e);
+      
+      /* Orphan the child - set parent to NULL */
+      child->parent = NULL;
+      
+      /* If child has already exited (THREAD_DYING), free its memory */
+      if (child->status == THREAD_DYING)
+        palloc_free_page (child);
+    }
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
