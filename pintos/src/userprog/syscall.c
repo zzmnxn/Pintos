@@ -202,6 +202,28 @@ syscall_handler (struct intr_frame *f)
       syscall_close (*(int *) (f->esp + 4));
       break;
       
+    case SYS_FIBONACCI:
+      if (!is_valid_ptr (f->esp + 4, 4))
+        {
+          syscall_exit (-1);
+        }
+      f->eax = syscall_fibonacci (*(int *) (f->esp + 4));
+      break;
+      
+    case SYS_MAX_OF_FOUR_INT:
+      if (!is_valid_ptr (f->esp + 4, 16))
+        {
+          syscall_exit (-1);
+        }
+      {
+        int a = *(int *) (f->esp + 4);
+        int b = *(int *) (f->esp + 8);
+        int c = *(int *) (f->esp + 12);
+        int d = *(int *) (f->esp + 16);
+        f->eax = syscall_max_of_four_int (a, b, c, d);
+      }
+      break;
+      
     default:
       printf ("Unknown system call: %d\n", syscall_number);
       syscall_exit (-1);
@@ -433,4 +455,44 @@ syscall_close (int fd)
 {
   /* TODO: Implement file closing */
   printf ("close: fd %d (not implemented)\n", fd);
+}
+
+/* Calculate the Nth Fibonacci number */
+int
+syscall_fibonacci (int n)
+{
+  if (n <= 0)
+    return 0;
+  if (n == 1 || n == 2)
+    return 1;
+  
+  /* Use iteration to avoid stack overflow for large n */
+  int prev = 1;  /* F(n-2) */
+  int curr = 1;  /* F(n-1) */
+  int result = 0;
+  
+  for (int i = 3; i <= n; i++)
+    {
+      result = prev + curr;
+      prev = curr;
+      curr = result;
+    }
+  
+  return result;
+}
+
+/* Return the maximum of four integers */
+int
+syscall_max_of_four_int (int a, int b, int c, int d)
+{
+  int max = a;
+  
+  if (b > max)
+    max = b;
+  if (c > max)
+    max = c;
+  if (d > max)
+    max = d;
+  
+  return max;
 }
