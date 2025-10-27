@@ -477,7 +477,7 @@ init_thread (struct thread *t, const char *name, int priority)
   for (int i = 0; i < FD_MAX; i++)
     t->fd_table[i] = NULL;
   t->next_fd = 2;  /* Start from 2 (0=STDIN, 1=STDOUT reserved) */
-  t->executable = NULL;
+  t->executable_file = NULL;
 #endif
 
   old_level = intr_disable ();

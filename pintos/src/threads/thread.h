@@ -113,7 +113,7 @@ struct thread
     /* File descriptor table. */
     struct file *fd_table[FD_MAX];      /* File descriptor table. */
     int next_fd;                        /* Next available file descriptor. */
-    struct file *executable;            /* Currently running executable file. */
+    struct file *executable_file;       /* Currently running executable file. */
 #endif
 
     /* Owned by thread.c. */

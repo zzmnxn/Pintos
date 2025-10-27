@@ -239,6 +239,24 @@ process_exit (void)
         palloc_free_page (child);
     }
 
+  /* Close all open files in file descriptor table */
+  for (int i = 2; i < FD_MAX; i++)
+    {
+      if (cur->fd_table[i] != NULL)
+        {
+          file_close (cur->fd_table[i]);
+          cur->fd_table[i] = NULL;
+        }
+    }
+
+  /* Clean up executable file */
+  if (cur->executable_file != NULL)
+    {
+      file_allow_write (cur->executable_file);
+      file_close (cur->executable_file);
+      cur->executable_file = NULL;
+    }
+
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
   pd = cur->pagedir;
@@ -397,6 +415,10 @@ load (const char *file_name, void (**eip) (void), void **esp)
       goto done; 
     }
   
+  /* Store executable file and deny writes to prevent modification during execution */
+  t->executable_file = file;
+  file_deny_write (t->executable_file);
+  
   /* Free the copy - we no longer need it since file_name will be used for setup_args */
   palloc_free_page (cmdline_copy);
 
@@ -487,7 +509,17 @@ load (const char *file_name, void (**eip) (void), void **esp)
 
  done:
   /* We arrive here whether the load is successful or not. */
-  file_close (file);
+  if (!success)
+    {
+      /* If load failed, close the file and clear executable_file */
+      if (t->executable_file != NULL)
+        {
+          file_allow_write (t->executable_file);
+          file_close (t->executable_file);
+          t->executable_file = NULL;
+        }
+    }
+  /* If load succeeded, keep the file open for the duration of the process */
   return success;
 }
 
