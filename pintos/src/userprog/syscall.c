@@ -312,6 +312,24 @@ is_valid_ptr (const void *ptr, unsigned size)
   return true;
 }
 
+/* Check if a file descriptor is valid and get the associated file */
+static struct file *
+get_file_from_fd (int fd)
+{
+  /* Check if fd is in valid range */
+  if (fd < 0 || fd >= FD_MAX)
+    return NULL;
+  
+  struct thread *cur = thread_current ();
+  
+  /* For stdin (0) and stdout (1), return NULL as they are special */
+  if (fd < 2)
+    return NULL;
+  
+  /* Check if file descriptor is open */
+  return cur->fd_table[fd];
+}
+
 /* Halt the system */
 static void
 syscall_halt (void)
@@ -434,12 +452,8 @@ syscall_open (const char *file)
 static int
 syscall_filesize (int fd)
 {
-  /* Validate file descriptor */
-  if (fd < 0 || fd >= FD_MAX)
-    return -1;
-  
-  struct thread *cur = thread_current ();
-  struct file *file = cur->fd_table[fd];
+  /* Get file from file descriptor */
+  struct file *file = get_file_from_fd (fd);
   
   /* Check if file descriptor is valid */
   if (file == NULL)
@@ -490,12 +504,8 @@ syscall_read (int fd, void *buffer, unsigned size)
     }
   else if (fd >= 2)  /* regular file */
     {
-      /* Validate file descriptor range */
-      if (fd >= FD_MAX)
-        return -1;
-      
-      struct thread *cur = thread_current ();
-      struct file *file = cur->fd_table[fd];
+      /* Get file from file descriptor */
+      struct file *file = get_file_from_fd (fd);
       
       /* Check if file descriptor is valid */
       if (file == NULL)
@@ -538,12 +548,8 @@ syscall_write (int fd, const void *buffer, unsigned size)
     }
   else if (fd >= 2)  /* regular file */
     {
-      /* Validate file descriptor range */
-      if (fd >= FD_MAX)
-        return -1;
-      
-      struct thread *cur = thread_current ();
-      struct file *file = cur->fd_table[fd];
+      /* Get file from file descriptor */
+      struct file *file = get_file_from_fd (fd);
       
       /* Check if file descriptor is valid */
       if (file == NULL)
@@ -570,12 +576,8 @@ syscall_write (int fd, const void *buffer, unsigned size)
 static void
 syscall_seek (int fd, unsigned position)
 {
-  /* Validate file descriptor (0 and 1 are reserved for stdin/stdout) */
-  if (fd < 2 || fd >= FD_MAX)
-    return;
-  
-  struct thread *cur = thread_current ();
-  struct file *file = cur->fd_table[fd];
+  /* Get file from file descriptor */
+  struct file *file = get_file_from_fd (fd);
   
   /* Check if file descriptor is valid */
   if (file == NULL)
@@ -595,12 +597,8 @@ syscall_seek (int fd, unsigned position)
 static unsigned
 syscall_tell (int fd)
 {
-  /* Validate file descriptor (0 and 1 are reserved for stdin/stdout) */
-  if (fd < 2 || fd >= FD_MAX)
-    return -1;
-  
-  struct thread *cur = thread_current ();
-  struct file *file = cur->fd_table[fd];
+  /* Get file from file descriptor */
+  struct file *file = get_file_from_fd (fd);
   
   /* Check if file descriptor is valid */
   if (file == NULL)
@@ -622,16 +620,14 @@ syscall_tell (int fd)
 static void
 syscall_close (int fd)
 {
-  /* Validate file descriptor (0 and 1 are reserved for stdin/stdout) */
-  if (fd < 2 || fd >= FD_MAX)
-    return;
-  
-  struct thread *cur = thread_current ();
-  struct file *file = cur->fd_table[fd];
+  /* Get file from file descriptor */
+  struct file *file = get_file_from_fd (fd);
   
   /* Check if file descriptor is valid */
   if (file == NULL)
     return;
+  
+  struct thread *cur = thread_current ();
   
   /* Acquire file system lock */
   lock_acquire (&filesys_lock);
