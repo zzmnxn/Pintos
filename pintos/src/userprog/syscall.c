@@ -540,13 +540,13 @@ syscall_write (int fd, const void *buffer, unsigned size)
     {
       return -1;
     }
-  else if (fd == 1 || fd == 2)  /* stdout or stderr */
+  else if (fd == 1)  /* stdout - write to console */
     {
       /* Write to console - no filesys_lock needed */
       putbuf (buffer, size);
       return size;
     }
-  else if (fd >= 2)  /* regular file */
+  else if (fd >= 2)  /* regular file (fd >= 2) */
     {
       /* Get file from file descriptor */
       struct file *file = get_file_from_fd (fd);
