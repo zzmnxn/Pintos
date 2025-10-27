@@ -374,9 +374,20 @@ syscall_create (const char *file, unsigned initial_size)
 static bool
 syscall_remove (const char *file)
 {
-  /* TODO: Implement file removal */
-  printf ("remove: %s (not implemented)\n", file);
-  return false;
+  /* Validate file pointer */
+  if (!check_user_string (file))
+    return false;
+  
+  /* Acquire file system lock */
+  lock_acquire (&filesys_lock);
+  
+  /* Remove file using file system */
+  bool success = filesys_remove (file);
+  
+  /* Release file system lock */
+  lock_release (&filesys_lock);
+  
+  return success;
 }
 
 /* Open a file */
@@ -559,17 +570,52 @@ syscall_write (int fd, const void *buffer, unsigned size)
 static void
 syscall_seek (int fd, unsigned position)
 {
-  /* TODO: Implement file seeking */
-  printf ("seek: fd %d, position %u (not implemented)\n", fd, position);
+  /* Validate file descriptor (0 and 1 are reserved for stdin/stdout) */
+  if (fd < 2 || fd >= FD_MAX)
+    return;
+  
+  struct thread *cur = thread_current ();
+  struct file *file = cur->fd_table[fd];
+  
+  /* Check if file descriptor is valid */
+  if (file == NULL)
+    return;
+  
+  /* Acquire file system lock */
+  lock_acquire (&filesys_lock);
+  
+  /* Seek to position in file */
+  file_seek (file, position);
+  
+  /* Release file system lock */
+  lock_release (&filesys_lock);
 }
 
 /* Report current position in a file */
 static unsigned
 syscall_tell (int fd)
 {
-  /* TODO: Implement file position reporting */
-  printf ("tell: fd %d (not implemented)\n", fd);
-  return -1;
+  /* Validate file descriptor (0 and 1 are reserved for stdin/stdout) */
+  if (fd < 2 || fd >= FD_MAX)
+    return -1;
+  
+  struct thread *cur = thread_current ();
+  struct file *file = cur->fd_table[fd];
+  
+  /* Check if file descriptor is valid */
+  if (file == NULL)
+    return -1;
+  
+  /* Acquire file system lock */
+  lock_acquire (&filesys_lock);
+  
+  /* Get current position in file */
+  off_t position = file_tell (file);
+  
+  /* Release file system lock */
+  lock_release (&filesys_lock);
+  
+  return (unsigned) position;
 }
 
 /* Close a file */
