@@ -354,9 +354,20 @@ syscall_wait (pid_t pid)
 static bool
 syscall_create (const char *file, unsigned initial_size)
 {
-  /* TODO: Implement file creation */
-  printf ("create: %s, size %u (not implemented)\n", file, initial_size);
-  return false;
+  /* Validate file pointer */
+  if (!check_user_string (file))
+    return false;
+  
+  /* Acquire file system lock */
+  lock_acquire (&filesys_lock);
+  
+  /* Create file using file system */
+  bool success = filesys_create (file, initial_size);
+  
+  /* Release file system lock */
+  lock_release (&filesys_lock);
+  
+  return success;
 }
 
 /* Delete a file */
@@ -372,8 +383,39 @@ syscall_remove (const char *file)
 static int
 syscall_open (const char *file)
 {
-  /* TODO: Implement file opening */
-  printf ("open: %s (not implemented)\n", file);
+  /* Validate file pointer */
+  if (!check_user_string (file))
+    return -1;
+  
+  /* Acquire file system lock */
+  lock_acquire (&filesys_lock);
+  
+  /* Open file using file system */
+  struct file *opened_file = filesys_open (file);
+  
+  /* Release file system lock */
+  lock_release (&filesys_lock);
+  
+  /* If file opening failed, return -1 */
+  if (opened_file == NULL)
+    return -1;
+  
+  /* Find available file descriptor in current thread's table */
+  struct thread *cur = thread_current ();
+  for (int fd = 2; fd < FD_MAX; fd++)
+    {
+      if (cur->fd_table[fd] == NULL)
+        {
+          cur->fd_table[fd] = opened_file;
+          return fd;
+        }
+    }
+  
+  /* No available file descriptor found, close the file and return -1 */
+  lock_acquire (&filesys_lock);
+  file_close (opened_file);
+  lock_release (&filesys_lock);
+  
   return -1;
 }
 
@@ -381,9 +423,27 @@ syscall_open (const char *file)
 static int
 syscall_filesize (int fd)
 {
-  /* TODO: Implement file size retrieval */
-  printf ("filesize: %d (not implemented)\n", fd);
-  return -1;
+  /* Validate file descriptor */
+  if (fd < 0 || fd >= FD_MAX)
+    return -1;
+  
+  struct thread *cur = thread_current ();
+  struct file *file = cur->fd_table[fd];
+  
+  /* Check if file descriptor is valid */
+  if (file == NULL)
+    return -1;
+  
+  /* Acquire file system lock */
+  lock_acquire (&filesys_lock);
+  
+  /* Get file size */
+  off_t size = file_length (file);
+  
+  /* Release file system lock */
+  lock_release (&filesys_lock);
+  
+  return (int) size;
 }
 
 /* Read from a file */
@@ -460,8 +520,28 @@ syscall_tell (int fd)
 static void
 syscall_close (int fd)
 {
-  /* TODO: Implement file closing */
-  printf ("close: fd %d (not implemented)\n", fd);
+  /* Validate file descriptor (0 and 1 are reserved for stdin/stdout) */
+  if (fd < 2 || fd >= FD_MAX)
+    return;
+  
+  struct thread *cur = thread_current ();
+  struct file *file = cur->fd_table[fd];
+  
+  /* Check if file descriptor is valid */
+  if (file == NULL)
+    return;
+  
+  /* Acquire file system lock */
+  lock_acquire (&filesys_lock);
+  
+  /* Close file */
+  file_close (file);
+  
+  /* Release file system lock */
+  lock_release (&filesys_lock);
+  
+  /* Clear file descriptor table entry */
+  cur->fd_table[fd] = NULL;
 }
 
 /* Calculate the Nth Fibonacci number */
