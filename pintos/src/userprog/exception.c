@@ -159,6 +159,8 @@ page_fault (struct intr_frame *f)
       
       /* Terminate the current process with exit status -1 */
       struct thread *cur = thread_current ();
+      cur->exit_status = -1;
+      cur->has_exited = true;
       printf ("%s: exit(-1)\n", cur->name);
       thread_exit ();
     }
