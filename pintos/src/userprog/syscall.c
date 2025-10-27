@@ -7,9 +7,15 @@
 #include "userprog/pagedir.h"
 #include "devices/shutdown.h"
 #include "devices/input.h"
+#include "filesys/filesys.h"
+#include "filesys/file.h"
+#include "threads/synch.h"
 
 /* Type definitions for system calls */
 typedef int pid_t;
+
+/* Global file system lock for synchronization */
+static struct lock filesys_lock;
 
 static void syscall_handler (struct intr_frame *);
 static void syscall_halt (void);
@@ -33,6 +39,7 @@ void
 syscall_init (void) 
 {
   intr_register_int (0x30, 3, INTR_ON, syscall_handler, "syscall");
+  lock_init (&filesys_lock);
 }
 
 static void
