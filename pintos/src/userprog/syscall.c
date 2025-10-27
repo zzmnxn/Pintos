@@ -450,12 +450,13 @@ syscall_filesize (int fd)
 static int
 syscall_read (int fd, void *buffer, unsigned size)
 {
+  /* Validate buffer pointer */
+  if (!is_valid_ptr (buffer, size))
+    return -1;
+  
   if (fd == 0)  /* stdin */
     {
-      if (!is_valid_ptr (buffer, size))
-        return -1;
-      
-      /* Read from input device */
+      /* Read from input device - no filesys_lock needed */
       unsigned bytes_read = 0;
       char *buf = (char *) buffer;
       
@@ -472,10 +473,36 @@ syscall_read (int fd, void *buffer, unsigned size)
       
       return bytes_read;
     }
-  else
+  else if (fd == 1)  /* stdout - cannot read from stdout */
     {
-      /* TODO: Implement file reading */
-      printf ("read: fd %d, size %u (not implemented)\n", fd, size);
+      return -1;
+    }
+  else if (fd >= 2)  /* regular file */
+    {
+      /* Validate file descriptor range */
+      if (fd >= FD_MAX)
+        return -1;
+      
+      struct thread *cur = thread_current ();
+      struct file *file = cur->fd_table[fd];
+      
+      /* Check if file descriptor is valid */
+      if (file == NULL)
+        return -1;
+      
+      /* Acquire file system lock */
+      lock_acquire (&filesys_lock);
+      
+      /* Read from file */
+      off_t bytes_read = file_read (file, buffer, size);
+      
+      /* Release file system lock */
+      lock_release (&filesys_lock);
+      
+      return (int) bytes_read;
+    }
+  else  /* invalid fd */
+    {
       return -1;
     }
 }
@@ -484,17 +511,46 @@ syscall_read (int fd, void *buffer, unsigned size)
 static int
 syscall_write (int fd, const void *buffer, unsigned size)
 {
-  if (fd == 1 || fd == 2)  /* stdout or stderr */
+  /* Validate buffer pointer */
+  if (!is_valid_ptr (buffer, size))
+    return -1;
+  
+  if (fd == 0)  /* stdin - cannot write to stdin */
     {
-      if (!is_valid_ptr (buffer, size))
-        return -1;
+      return -1;
+    }
+  else if (fd == 1 || fd == 2)  /* stdout or stderr */
+    {
+      /* Write to console - no filesys_lock needed */
       putbuf (buffer, size);
       return size;
     }
-  else
+  else if (fd >= 2)  /* regular file */
     {
-      /* TODO: Implement file writing */
-      printf ("write: fd %d, size %u (not implemented)\n", fd, size);
+      /* Validate file descriptor range */
+      if (fd >= FD_MAX)
+        return -1;
+      
+      struct thread *cur = thread_current ();
+      struct file *file = cur->fd_table[fd];
+      
+      /* Check if file descriptor is valid */
+      if (file == NULL)
+        return -1;
+      
+      /* Acquire file system lock */
+      lock_acquire (&filesys_lock);
+      
+      /* Write to file */
+      off_t bytes_written = file_write (file, buffer, size);
+      
+      /* Release file system lock */
+      lock_release (&filesys_lock);
+      
+      return (int) bytes_written;
+    }
+  else  /* invalid fd */
+    {
       return -1;
     }
 }
