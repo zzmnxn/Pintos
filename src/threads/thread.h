@@ -26,6 +26,9 @@ typedef int tid_t;
 #define PRI_DEFAULT 31                  /* Default priority. */
 #define PRI_MAX 63                      /* Highest priority. */
 
+/* File descriptor table size. */
+#define FD_MAX 128                      /* Maximum number of file descriptors. */
+
 /* A kernel thread or user process.
 
    Each thread structure is stored in its own 4 kB page.  The
@@ -106,6 +109,11 @@ struct thread
     bool load_success;                  /* Whether the process loaded successfully. */
     struct semaphore exit_sema;         /* Semaphore for exit synchronization. */
     struct semaphore load_sema;         /* Semaphore for load completion. */
+    
+    /* File descriptor table. */
+    struct file *fd_table[FD_MAX];      /* File descriptor table. */
+    int next_fd;                        /* Next available file descriptor. */
+    struct file *executable_file;       /* Currently running executable file. */
 #endif
 
     /* Owned by thread.c. */

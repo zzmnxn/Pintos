@@ -7,9 +7,15 @@
 #include "userprog/pagedir.h"
 #include "devices/shutdown.h"
 #include "devices/input.h"
+#include "filesys/filesys.h"
+#include "filesys/file.h"
+#include "threads/synch.h"
 
 /* Type definitions for system calls */
 typedef int pid_t;
+
+/* Global file system lock for synchronization */
+static struct lock filesys_lock;
 
 static void syscall_handler (struct intr_frame *);
 static void syscall_halt (void);
@@ -33,6 +39,7 @@ void
 syscall_init (void) 
 {
   intr_register_int (0x30, 3, INTR_ON, syscall_handler, "syscall");
+  lock_init (&filesys_lock);
 }
 
 static void
@@ -305,6 +312,24 @@ is_valid_ptr (const void *ptr, unsigned size)
   return true;
 }
 
+/* Check if a file descriptor is valid and get the associated file */
+static struct file *
+get_file_from_fd (int fd)
+{
+  /* Check if fd is in valid range */
+  if (fd < 0 || fd >= FD_MAX)
+    return NULL;
+  
+  struct thread *cur = thread_current ();
+  
+  /* For stdin (0) and stdout (1), return NULL as they are special */
+  if (fd < 2)
+    return NULL;
+  
+  /* Check if file descriptor is open */
+  return cur->fd_table[fd];
+}
+
 /* Halt the system */
 static void
 syscall_halt (void)
@@ -347,26 +372,79 @@ syscall_wait (pid_t pid)
 static bool
 syscall_create (const char *file, unsigned initial_size)
 {
-  /* TODO: Implement file creation */
-  printf ("create: %s, size %u (not implemented)\n", file, initial_size);
-  return false;
+  /* Validate file pointer */
+  if (!check_user_string (file))
+    return false;
+  
+  /* Acquire file system lock */
+  lock_acquire (&filesys_lock);
+  
+  /* Create file using file system */
+  bool success = filesys_create (file, initial_size);
+  
+  /* Release file system lock */
+  lock_release (&filesys_lock);
+  
+  return success;
 }
 
 /* Delete a file */
 static bool
 syscall_remove (const char *file)
 {
-  /* TODO: Implement file removal */
-  printf ("remove: %s (not implemented)\n", file);
-  return false;
+  /* Validate file pointer */
+  if (!check_user_string (file))
+    return false;
+  
+  /* Acquire file system lock */
+  lock_acquire (&filesys_lock);
+  
+  /* Remove file using file system */
+  bool success = filesys_remove (file);
+  
+  /* Release file system lock */
+  lock_release (&filesys_lock);
+  
+  return success;
 }
 
 /* Open a file */
 static int
 syscall_open (const char *file)
 {
-  /* TODO: Implement file opening */
-  printf ("open: %s (not implemented)\n", file);
+  /* Validate file pointer */
+  if (!check_user_string (file))
+    return -1;
+  
+  /* Acquire file system lock */
+  lock_acquire (&filesys_lock);
+  
+  /* Open file using file system */
+  struct file *opened_file = filesys_open (file);
+  
+  /* Release file system lock */
+  lock_release (&filesys_lock);
+  
+  /* If file opening failed, return -1 */
+  if (opened_file == NULL)
+    return -1;
+  
+  /* Find available file descriptor in current thread's table */
+  struct thread *cur = thread_current ();
+  for (int fd = 2; fd < FD_MAX; fd++)
+    {
+      if (cur->fd_table[fd] == NULL)
+        {
+          cur->fd_table[fd] = opened_file;
+          return fd;
+        }
+    }
+  
+  /* No available file descriptor found, close the file and return -1 */
+  lock_acquire (&filesys_lock);
+  file_close (opened_file);
+  lock_release (&filesys_lock);
+  
   return -1;
 }
 
@@ -374,21 +452,36 @@ syscall_open (const char *file)
 static int
 syscall_filesize (int fd)
 {
-  /* TODO: Implement file size retrieval */
-  printf ("filesize: %d (not implemented)\n", fd);
-  return -1;
+  /* Get file from file descriptor */
+  struct file *file = get_file_from_fd (fd);
+  
+  /* Check if file descriptor is valid */
+  if (file == NULL)
+    return -1;
+  
+  /* Acquire file system lock */
+  lock_acquire (&filesys_lock);
+  
+  /* Get file size */
+  off_t size = file_length (file);
+  
+  /* Release file system lock */
+  lock_release (&filesys_lock);
+  
+  return (int) size;
 }
 
 /* Read from a file */
 static int
 syscall_read (int fd, void *buffer, unsigned size)
 {
+  /* Validate buffer pointer */
+  if (!is_valid_ptr (buffer, size))
+    return -1;
+  
   if (fd == 0)  /* stdin */
     {
-      if (!is_valid_ptr (buffer, size))
-        return -1;
-      
-      /* Read from input device */
+      /* Read from input device - no filesys_lock needed */
       unsigned bytes_read = 0;
       char *buf = (char *) buffer;
       
@@ -405,10 +498,32 @@ syscall_read (int fd, void *buffer, unsigned size)
       
       return bytes_read;
     }
-  else
+  else if (fd == 1)  /* stdout - cannot read from stdout */
     {
-      /* TODO: Implement file reading */
-      printf ("read: fd %d, size %u (not implemented)\n", fd, size);
+      return -1;
+    }
+  else if (fd >= 2)  /* regular file */
+    {
+      /* Get file from file descriptor */
+      struct file *file = get_file_from_fd (fd);
+      
+      /* Check if file descriptor is valid */
+      if (file == NULL)
+        return -1;
+      
+      /* Acquire file system lock */
+      lock_acquire (&filesys_lock);
+      
+      /* Read from file */
+      off_t bytes_read = file_read (file, buffer, size);
+      
+      /* Release file system lock */
+      lock_release (&filesys_lock);
+      
+      return (int) bytes_read;
+    }
+  else  /* invalid fd */
+    {
       return -1;
     }
 }
@@ -417,17 +532,42 @@ syscall_read (int fd, void *buffer, unsigned size)
 static int
 syscall_write (int fd, const void *buffer, unsigned size)
 {
-  if (fd == 1 || fd == 2)  /* stdout or stderr */
+  /* Validate buffer pointer */
+  if (!is_valid_ptr (buffer, size))
+    return -1;
+  
+  if (fd == 0)  /* stdin - cannot write to stdin */
     {
-      if (!is_valid_ptr (buffer, size))
-        return -1;
+      return -1;
+    }
+  else if (fd == 1)  /* stdout - write to console */
+    {
+      /* Write to console - no filesys_lock needed */
       putbuf (buffer, size);
       return size;
     }
-  else
+  else if (fd >= 2)  /* regular file (fd >= 2) */
     {
-      /* TODO: Implement file writing */
-      printf ("write: fd %d, size %u (not implemented)\n", fd, size);
+      /* Get file from file descriptor */
+      struct file *file = get_file_from_fd (fd);
+      
+      /* Check if file descriptor is valid */
+      if (file == NULL)
+        return -1;
+      
+      /* Acquire file system lock */
+      lock_acquire (&filesys_lock);
+      
+      /* Write to file */
+      off_t bytes_written = file_write (file, buffer, size);
+      
+      /* Release file system lock */
+      lock_release (&filesys_lock);
+      
+      return (int) bytes_written;
+    }
+  else  /* invalid fd */
+    {
       return -1;
     }
 }
@@ -436,25 +576,70 @@ syscall_write (int fd, const void *buffer, unsigned size)
 static void
 syscall_seek (int fd, unsigned position)
 {
-  /* TODO: Implement file seeking */
-  printf ("seek: fd %d, position %u (not implemented)\n", fd, position);
+  /* Get file from file descriptor */
+  struct file *file = get_file_from_fd (fd);
+  
+  /* Check if file descriptor is valid */
+  if (file == NULL)
+    return;
+  
+  /* Acquire file system lock */
+  lock_acquire (&filesys_lock);
+  
+  /* Seek to position in file */
+  file_seek (file, position);
+  
+  /* Release file system lock */
+  lock_release (&filesys_lock);
 }
 
 /* Report current position in a file */
 static unsigned
 syscall_tell (int fd)
 {
-  /* TODO: Implement file position reporting */
-  printf ("tell: fd %d (not implemented)\n", fd);
-  return -1;
+  /* Get file from file descriptor */
+  struct file *file = get_file_from_fd (fd);
+  
+  /* Check if file descriptor is valid */
+  if (file == NULL)
+    return -1;
+  
+  /* Acquire file system lock */
+  lock_acquire (&filesys_lock);
+  
+  /* Get current position in file */
+  off_t position = file_tell (file);
+  
+  /* Release file system lock */
+  lock_release (&filesys_lock);
+  
+  return (unsigned) position;
 }
 
 /* Close a file */
 static void
 syscall_close (int fd)
 {
-  /* TODO: Implement file closing */
-  printf ("close: fd %d (not implemented)\n", fd);
+  /* Get file from file descriptor */
+  struct file *file = get_file_from_fd (fd);
+  
+  /* Check if file descriptor is valid */
+  if (file == NULL)
+    return;
+  
+  struct thread *cur = thread_current ();
+  
+  /* Acquire file system lock */
+  lock_acquire (&filesys_lock);
+  
+  /* Close file */
+  file_close (file);
+  
+  /* Release file system lock */
+  lock_release (&filesys_lock);
+  
+  /* Clear file descriptor table entry */
+  cur->fd_table[fd] = NULL;
 }
 
 /* Calculate the Nth Fibonacci number */
