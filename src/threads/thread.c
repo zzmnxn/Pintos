@@ -277,6 +277,11 @@ thread_create (const char *name, int priority,
   /* Add to run queue. */
   thread_unblock (t);
 
+  /* If the newly created thread has a higher priority, yield. */
+  if (thread_current()->priority < t->priority) {
+    thread_yield();
+  }
+
   return tid;
 }
 
@@ -334,6 +339,17 @@ thread_unblock (struct thread *t)
           return;
         }
     }
+  
+  /* Check if the current running thread should yield. */
+  if (!list_empty(&ready_list) && thread_current() != idle_thread &&
+      list_entry(list_front(&ready_list), struct thread, elem)->priority > thread_current()->priority) {
+    intr_set_level (old_level);
+    if (intr_context ())
+      intr_yield_on_return ();
+    else
+      thread_yield ();
+    return;
+  }
   
   intr_set_level (old_level);
 }
@@ -457,23 +473,13 @@ thread_update_priority (void)
 void
 thread_set_priority (int new_priority) 
 {
-  struct thread *cur;
-  struct thread *highest_priority;
-  
-  cur = thread_current ();
-  cur->base_priority = new_priority;
-  
-  /* Recalculate actual priority based on donations. */
-  thread_update_priority ();
-  
-  /* Check for preemption: if highest priority thread in ready_list
-     has higher priority than current thread, yield. */
-  if (!list_empty (&ready_list))
-    {
-      highest_priority = list_entry (list_front (&ready_list), struct thread, elem);
-      if (highest_priority->priority > cur->priority)
-        thread_yield ();
-    }
+  thread_current ()->priority = new_priority;
+
+  /* If the current thread is no longer the highest priority, yield. */
+  if (!list_empty(&ready_list) &&
+      thread_current()->priority < list_entry(list_front(&ready_list), struct thread, elem)->priority) {
+    thread_yield();
+  }
 }
 
 /* Returns the current thread's priority. */
@@ -599,24 +605,20 @@ running_thread (void)
   return pg_round_down (esp);
 }
 
+/* Returns true if thread A has a higher priority than thread B. */
+static bool
+thread_priority_less (const struct list_elem *a, const struct list_elem *b, void *aux UNUSED)
+{
+  const struct thread *thread_a = list_entry(a, struct thread, elem);
+  const struct thread *thread_b = list_entry(b, struct thread, elem);
+  return thread_a->priority > thread_b->priority;
+}
+
 /* Returns true if T appears to point to a valid thread. */
 static bool
 is_thread (struct thread *t)
 {
   return t != NULL && t->magic == THREAD_MAGIC;
-}
-
-/* Returns true if thread A has higher priority than thread B.
-   Used for descending order sorting (higher priority first). */
-static bool
-thread_priority_less (const struct list_elem *a,
-                       const struct list_elem *b,
-                       void *aux UNUSED)
-{
-  const struct thread *ta = list_entry (a, struct thread, elem);
-  const struct thread *tb = list_entry (b, struct thread, elem);
-  
-  return ta->priority > tb->priority;
 }
 
 /* Does basic initialization of T as a blocked thread named
