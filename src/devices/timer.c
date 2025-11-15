@@ -30,6 +30,9 @@ static void busy_wait (int64_t loops);
 static void real_time_sleep (int64_t num, int32_t denom);
 static void real_time_delay (int64_t num, int32_t denom);
 
+/* List of sleeping threads. */
+static struct list sleep_list;
+
 /* Sets up the timer to interrupt TIMER_FREQ times per second,
    and registers the corresponding interrupt. */
 void
@@ -37,6 +40,7 @@ timer_init (void)
 {
   pit_configure_channel (0, 2, TIMER_FREQ);
   intr_register_ext (0x20, timer_interrupt, "8254 Timer");
+  list_init (&sleep_list);
 }
 
 /* Calibrates loops_per_tick, used to implement brief delays. */
@@ -89,11 +93,30 @@ timer_elapsed (int64_t then)
 void
 timer_sleep (int64_t ticks) 
 {
-  int64_t start = timer_ticks ();
+  // 1. 잠들 시간이 0 이하이면 즉시 리턴
+  if (ticks <= 0) {
+    return;
+  }
 
-  ASSERT (intr_get_level () == INTR_ON);
-  while (timer_elapsed (start) < ticks) 
-    thread_yield ();
+  // 현재 스레드를 가져옴
+  struct thread *cur = thread_current();
+  
+  printf("timer_sleep: %s is going to sleep for %lld ticks.\n", thread_current()->name, ticks);
+  
+  // 2. 깨어나야 할 시간을 계산하여 스레드 구조체에 저장
+  // 현재 시간 + 잠들 시간
+  cur->wakeup_tick = timer_ticks() + ticks;
+
+  // 3. 인터럽트를 비활성화하고 스레드를 sleep_list에 추가 후 블록
+  // 이 과정은 반드시 원자적으로 실행되어야 함
+  enum intr_level old_level = intr_disable();
+  
+  list_push_back(&sleep_list, &cur->elem);
+  printf("timer_sleep: %s is now blocking.\n", thread_current()->name);
+  thread_block();
+  
+  // 4. 원래 인터럽트 레벨로 복원
+  intr_set_level(old_level);
 }
 
 /* Sleeps for approximately MS milliseconds.  Interrupts must be
@@ -170,7 +193,26 @@ timer_print_stats (void)
 static void
 timer_interrupt (struct intr_frame *args UNUSED)
 {
+  struct list_elem *e, *next_e;
+  struct thread *t;
+  int64_t current_ticks;
+
+  printf("timer_interrupt: Tick %lld\n", timer_ticks() + 1);
   ticks++;
+  
+  current_ticks = timer_ticks ();
+  for (e = list_begin (&sleep_list); e != list_end (&sleep_list); e = next_e)
+    {
+      next_e = list_next (e);
+      t = list_entry (e, struct thread, elem);
+      if (t->wakeup_tick <= current_ticks)
+        {
+          list_remove (e);
+          printf("timer_interrupt: Waking up %s (wakeup_tick: %lld, current_tick: %lld)\n", t->name, t->wakeup_tick, ticks);
+          thread_unblock (t);
+        }
+    }
+  
   thread_tick ();
 }
 
