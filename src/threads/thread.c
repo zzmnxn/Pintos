@@ -246,42 +246,30 @@ thread_create (const char *name, int priority,
 
   ASSERT (function != NULL);
 
-  /* Allocate thread. */
   t = palloc_get_page (PAL_ZERO);
   if (t == NULL)
     return TID_ERROR;
 
-  /* Initialize thread. */
   init_thread (t, name, priority);
   tid = t->tid = allocate_tid ();
   
-  /* Inherit parent's nice value for BSD scheduler. */
   t->nice = thread_current ()->nice;
   t->recent_cpu = 0;
 
-  /* Stack frame for kernel_thread(). */
   kf = alloc_frame (t, sizeof *kf);
   kf->eip = NULL;
   kf->function = function;
   kf->aux = aux;
 
-  /* Stack frame for switch_entry(). */
   ef = alloc_frame (t, sizeof *ef);
   ef->eip = (void (*) (void)) kernel_thread;
 
-  /* Stack frame for switch_threads(). */
   sf = alloc_frame (t, sizeof *sf);
   sf->eip = switch_entry;
   sf->ebp = 0;
 
-  /* Add to run queue. */
   thread_unblock (t);
-
-  /* If the newly created thread has a higher priority, yield. */
-  if (thread_current()->priority < t->priority) {
-    thread_yield();
-  }
-
+        
   return tid;
 }
 
@@ -313,8 +301,6 @@ void
 thread_unblock (struct thread *t) 
 {
   enum intr_level old_level;
-  struct thread *cur;
-  struct thread *highest_priority;
 
   ASSERT (is_thread (t));
 
@@ -323,33 +309,14 @@ thread_unblock (struct thread *t)
   list_insert_ordered (&ready_list, &t->elem, thread_priority_less, NULL);
   t->status = THREAD_READY;
   
-  /* Check for preemption: if highest priority thread in ready_list
-     has higher priority than current thread, yield. */
-  if (!list_empty (&ready_list))
+  /* Check if the current thread should yield to the unblocked one. */
+  if (thread_current () != idle_thread && t->priority > thread_current ()->priority)
     {
-      cur = thread_current ();
-      highest_priority = list_entry (list_front (&ready_list), struct thread, elem);
-      if (highest_priority->priority > cur->priority)
-        {
-          intr_set_level (old_level);
-          if (intr_context ())
-            intr_yield_on_return ();
-          else
-            thread_yield ();
-          return;
-        }
+      if (intr_context ())
+        intr_yield_on_return ();
+      else
+        thread_yield ();
     }
-  
-  /* Check if the current running thread should yield. */
-  if (!list_empty(&ready_list) && thread_current() != idle_thread &&
-      list_entry(list_front(&ready_list), struct thread, elem)->priority > thread_current()->priority) {
-    intr_set_level (old_level);
-    if (intr_context ())
-      intr_yield_on_return ();
-    else
-      thread_yield ();
-    return;
-  }
   
   intr_set_level (old_level);
 }
@@ -474,11 +441,9 @@ void
 thread_set_priority (int new_priority) 
 {
   thread_current ()->priority = new_priority;
-
-  /* If the current thread is no longer the highest priority, yield. */
   if (!list_empty(&ready_list) &&
       thread_current()->priority < list_entry(list_front(&ready_list), struct thread, elem)->priority) {
-    thread_yield();
+      thread_yield();
   }
 }
 

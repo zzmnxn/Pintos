@@ -93,30 +93,21 @@ timer_elapsed (int64_t then)
 void
 timer_sleep (int64_t ticks) 
 {
-  // 1. 잠들 시간이 0 이하이면 즉시 리턴
-  if (ticks <= 0) {
+  struct thread *cur;
+  enum intr_level old_level;
+
+  ASSERT (intr_get_level () == INTR_ON);
+  
+  if (ticks <= 0)
     return;
-  }
 
-  // 현재 스레드를 가져옴
-  struct thread *cur = thread_current();
-  
-  printf("timer_sleep: %s is going to sleep for %lld ticks.\n", thread_current()->name, ticks);
-  
-  // 2. 깨어나야 할 시간을 계산하여 스레드 구조체에 저장
-  // 현재 시간 + 잠들 시간
-  cur->wakeup_tick = timer_ticks() + ticks;
+  cur = thread_current ();
+  cur->wakeup_tick = timer_ticks () + ticks;
 
-  // 3. 인터럽트를 비활성화하고 스레드를 sleep_list에 추가 후 블록
-  // 이 과정은 반드시 원자적으로 실행되어야 함
-  enum intr_level old_level = intr_disable();
-  
-  list_push_back(&sleep_list, &cur->elem);
-  printf("timer_sleep: %s is now blocking.\n", thread_current()->name);
-  thread_block();
-  
-  // 4. 원래 인터럽트 레벨로 복원
-  intr_set_level(old_level);
+  old_level = intr_disable ();
+  list_push_back (&sleep_list, &cur->elem);
+  thread_block ();
+  intr_set_level (old_level);
 }
 
 /* Sleeps for approximately MS milliseconds.  Interrupts must be
@@ -197,7 +188,6 @@ timer_interrupt (struct intr_frame *args UNUSED)
   struct thread *t;
   int64_t current_ticks;
 
-  printf("timer_interrupt: Tick %lld\n", timer_ticks() + 1);
   ticks++;
   
   current_ticks = timer_ticks ();
@@ -208,7 +198,6 @@ timer_interrupt (struct intr_frame *args UNUSED)
       if (t->wakeup_tick <= current_ticks)
         {
           list_remove (e);
-          printf("timer_interrupt: Waking up %s (wakeup_tick: %lld, current_tick: %lld)\n", t->name, t->wakeup_tick, ticks);
           thread_unblock (t);
         }
     }
