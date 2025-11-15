@@ -427,8 +427,17 @@ thread_update_priority (void)
        e = list_next (e))
     {
       struct lock *lock = list_entry (e, struct lock, elem);
-      if (lock->max_priority > max_donated_priority)
-        max_donated_priority = lock->max_priority;
+      struct list_elem *waiter_elem;
+      
+      /* Check all waiters in this lock's semaphore waiters list. */
+      for (waiter_elem = list_begin (&lock->semaphore.waiters);
+           waiter_elem != list_end (&lock->semaphore.waiters);
+           waiter_elem = list_next (waiter_elem))
+        {
+          struct thread *waiter = list_entry (waiter_elem, struct thread, elem);
+          if (waiter->priority > max_donated_priority)
+            max_donated_priority = waiter->priority;
+        }
     }
   
   /* Update priority to the maximum of base_priority and max donated priority. */
@@ -440,11 +449,21 @@ thread_update_priority (void)
 void
 thread_set_priority (int new_priority) 
 {
-  thread_current ()->priority = new_priority;
-  if (!list_empty(&ready_list) &&
-      thread_current()->priority < list_entry(list_front(&ready_list), struct thread, elem)->priority) {
-      thread_yield();
-  }
+  struct thread *cur = thread_current ();
+  
+  /* Update base_priority instead of priority. */
+  cur->base_priority = new_priority;
+  
+  /* Recalculate priority based on base_priority and donations. */
+  thread_update_priority ();
+  
+  /* If priority decreased and there's a higher priority thread ready, yield. */
+  if (!list_empty (&ready_list))
+    {
+      struct thread *highest_ready = list_entry (list_front (&ready_list), struct thread, elem);
+      if (cur->priority < highest_ready->priority)
+        thread_yield ();
+    }
 }
 
 /* Returns the current thread's priority. */

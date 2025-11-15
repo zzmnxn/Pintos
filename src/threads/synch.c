@@ -253,10 +253,22 @@ lock_acquire (struct lock *lock)
   /* Set current thread's waiting_for_lock before blocking. */
   cur->waiting_for_lock = lock;
   
-  /* If lock is held by another thread, donate priority. */
-  if (lock->holder != NULL)
+  /* If lock is held by another thread with lower priority, donate priority. */
+  if (lock->holder != NULL && lock->holder != cur)
     {
-      thread_donate_priority (lock->holder, cur->priority);
+      struct thread *holder = lock->holder;
+      
+      /* Donate priority and propagate recursively through nested donations. */
+      while (holder != NULL && cur->priority > holder->priority)
+        {
+          holder->priority = cur->priority;
+          
+          /* Propagate donation if holder is waiting for another lock. */
+          if (holder->waiting_for_lock != NULL && holder->waiting_for_lock->holder != NULL)
+            holder = holder->waiting_for_lock->holder;
+          else
+            break;
+        }
       
       /* Update lock's max_priority. */
       if (cur->priority > lock->max_priority)
