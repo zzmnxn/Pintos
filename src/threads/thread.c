@@ -208,6 +208,23 @@ thread_tick (void)
             }
         }
     }
+  /* Priority Aging: Every 1 second, boost ready/running threads' priority by 1 (up to PRI_MAX). */
+  if (thread_prior_aging && !thread_mlfqs)
+    {
+      if (timer_ticks () % TIMER_FREQ == 0)
+        {
+          struct list_elem *e;
+          for (e = list_begin (&all_list); e != list_end (&all_list); e = list_next (e))
+            {
+              struct thread *th = list_entry (e, struct thread, allelem);
+              if (th->status == THREAD_READY || th->status == THREAD_RUNNING)
+                {
+                  if (th->priority < PRI_MAX)
+                    th->priority++;
+                }
+            }
+        }
+    }
 
   /* Enforce preemption. */
   if (++thread_ticks >= TIME_SLICE)

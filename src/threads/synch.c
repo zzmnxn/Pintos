@@ -123,6 +123,7 @@ void
 sema_up (struct semaphore *sema) 
 {
   enum intr_level old_level;
+  struct thread *unblocked = NULL;
 
   ASSERT (sema != NULL);
 
@@ -131,10 +132,21 @@ sema_up (struct semaphore *sema)
     {
       /* Re-sort in case any waiter's priority changed while waiting. */
       list_sort (&sema->waiters, sema_priority_less, NULL);
-      thread_unblock (list_entry (list_pop_front (&sema->waiters),
-                                  struct thread, elem));
+      unblocked = list_entry (list_pop_front (&sema->waiters),
+                              struct thread, elem);
+      thread_unblock (unblocked);
     }
   sema->value++;
+
+  /* Yield if a higher-priority thread was just unblocked. */
+  if (unblocked != NULL && thread_current ()->priority < unblocked->priority)
+    {
+      if (intr_context ())
+        intr_yield_on_return ();
+      else
+        thread_yield ();
+    }
+
   intr_set_level (old_level);
 }
 
