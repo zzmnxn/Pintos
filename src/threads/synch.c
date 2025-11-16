@@ -128,8 +128,12 @@ sema_up (struct semaphore *sema)
 
   old_level = intr_disable ();
   if (!list_empty (&sema->waiters)) 
-    thread_unblock (list_entry (list_pop_front (&sema->waiters),
-                                struct thread, elem));
+    {
+      /* Re-sort in case any waiter's priority changed while waiting. */
+      list_sort (&sema->waiters, sema_priority_less, NULL);
+      thread_unblock (list_entry (list_pop_front (&sema->waiters),
+                                  struct thread, elem));
+    }
   sema->value++;
   intr_set_level (old_level);
 }
@@ -397,6 +401,7 @@ cond_wait (struct condition *cond, struct lock *lock)
   ASSERT (lock_held_by_current_thread (lock));
   
   sema_init (&waiter.semaphore, 0);
+  /* Just enqueue; cond_signal will select the highest-priority waiter. */
   list_push_back (&cond->waiters, &waiter.elem);
   lock_release (lock);
   sema_down (&waiter.semaphore);
@@ -419,8 +424,33 @@ cond_signal (struct condition *cond, struct lock *lock UNUSED)
   ASSERT (lock_held_by_current_thread (lock));
 
   if (!list_empty (&cond->waiters)) 
-    sema_up (&list_entry (list_pop_front (&cond->waiters),
-                          struct semaphore_elem, elem)->semaphore);
+    {
+      /* Find the semaphore_elem whose top waiter has the highest priority. */
+      struct list_elem *e;
+      struct list_elem *best_e = list_begin (&cond->waiters);
+      int best_prio = PRI_MIN - 1;
+
+      for (e = list_begin (&cond->waiters); e != list_end (&cond->waiters); e = list_next (e))
+        {
+          struct semaphore_elem *se = list_entry (e, struct semaphore_elem, elem);
+          /* Ensure the semaphore's waiters are ordered by priority. */
+          if (!list_empty (&se->semaphore.waiters))
+            {
+              list_sort (&se->semaphore.waiters, sema_priority_less, NULL);
+              struct thread *t = list_entry (list_front (&se->semaphore.waiters), struct thread, elem);
+              if (t->priority > best_prio)
+                {
+                  best_prio = t->priority;
+                  best_e = e;
+                }
+            }
+        }
+
+      /* Remove selected waiter and wake it. */
+      struct semaphore_elem *chosen = list_entry (best_e, struct semaphore_elem, elem);
+      list_remove (best_e);
+      sema_up (&chosen->semaphore);
+    }
 }
 
 /* Wakes up all threads, if any, waiting on COND (protected by

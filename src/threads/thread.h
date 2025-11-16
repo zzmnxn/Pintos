@@ -135,6 +135,9 @@ struct thread
    Controlled by kernel command-line option "-o mlfqs". */
 extern bool thread_mlfqs;
 
+/* If true, enable priority aging (enabled via kernel option "-aging"). */
+extern bool thread_prior_aging;
+
 void thread_init (void);
 void thread_start (void);
 

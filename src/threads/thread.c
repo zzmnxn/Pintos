@@ -64,6 +64,9 @@ static int load_avg;            /* System load average (fixed-point). */
    Controlled by kernel command-line option "-o mlfqs". */
 bool thread_mlfqs;
 
+/* If true, enable priority aging. Set via "-aging" kernel option. */
+bool thread_prior_aging;
+
 static void kernel_thread (thread_func *, void *aux);
 
 static void idle (void *aux UNUSED);
