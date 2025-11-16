@@ -182,7 +182,7 @@ thread_tick (void)
               int numerator = MUL_INT (load_avg, 2);
               int denominator = ADD_INT (numerator, 1);
               th->recent_cpu = ADD_INT (MUL_FP (DIV_FP (numerator, denominator), th->recent_cpu),
-                                       INT_TO_FP (th->nice));
+                                       th->nice);
             }
           /* Keep idle thread's recent_cpu at 0. */
           idle_thread->recent_cpu = 0;
@@ -216,15 +216,7 @@ thread_tick (void)
           /* Rebuild ready_list ordering by updated priorities. */
           if (!list_empty (&ready_list))
             {
-              struct list_elem *e = list_begin (&ready_list);
-              while (e != list_end (&ready_list))
-                {
-                  struct thread *rt = list_entry (e, struct thread, elem);
-                  /* Advance iterator before removing current element. */
-                  e = list_next (e);
-                  list_remove (&rt->elem);
-                  list_insert_ordered (&ready_list, &rt->elem, thread_priority_less, NULL);
-                }
+              list_sort (&ready_list, thread_priority_less, NULL);
             }
           
           /* If a higher-priority thread is now ready, preempt current on interrupt return. */
@@ -370,8 +362,31 @@ thread_unblock (struct thread *t)
 
   old_level = intr_disable ();
   ASSERT (t->status == THREAD_BLOCKED);
+  /* Under MLFQS, ensure the thread's priority is up-to-date before
+     inserting into the ready list, so ordering and preemption are correct
+     immediately upon wakeup. */
+  if (thread_mlfqs && t != idle_thread)
+    {
+      int new_priority = PRI_MAX
+                         - FP_TO_INT_ZERO (DIV_INT (t->recent_cpu, 4))
+                         - (t->nice * 2);
+      if (new_priority < PRI_MIN)
+        new_priority = PRI_MIN;
+      if (new_priority > PRI_MAX)
+        new_priority = PRI_MAX;
+      t->priority = new_priority;
+    }
   list_insert_ordered (&ready_list, &t->elem, thread_priority_less, NULL);
   t->status = THREAD_READY;
+  
+  /* If the unblocked thread has higher priority, preempt current thread.
+     This is critical for correct behavior in interrupt contexts (e.g., timer). */
+  if (thread_current () != idle_thread && t->priority > thread_current ()->priority)
+    {
+      if (intr_context ())
+        intr_yield_on_return ();
+    }
+  
   intr_set_level (old_level);
 
 }
