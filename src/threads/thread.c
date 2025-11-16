@@ -177,11 +177,15 @@ thread_tick (void)
           for (e = list_begin (&all_list); e != list_end (&all_list); e = list_next (e))
             {
               struct thread *th = list_entry (e, struct thread, allelem);
+              if (th == idle_thread)
+                continue; /* Skip idle thread */
               int numerator = MUL_INT (load_avg, 2);
               int denominator = ADD_INT (numerator, 1);
               th->recent_cpu = ADD_INT (MUL_FP (DIV_FP (numerator, denominator), th->recent_cpu),
                                        INT_TO_FP (th->nice));
             }
+          /* Keep idle thread's recent_cpu at 0. */
+          idle_thread->recent_cpu = 0;
         }
       
       /* Every 4 ticks: recalculate all threads' priority. */
@@ -192,10 +196,12 @@ thread_tick (void)
           for (e = list_begin (&all_list); e != list_end (&all_list); e = list_next (e))
             {
               struct thread *th = list_entry (e, struct thread, allelem);
+              if (th == idle_thread)
+                continue; /* Skip idle thread */
               int new_priority;
               
               /* priority = PRI_MAX - (recent_cpu / 4) - (nice * 2) */
-              new_priority = PRI_MAX - FP_TO_INT_NEAREST (DIV_INT (th->recent_cpu, 4))
+              new_priority = PRI_MAX - FP_TO_INT_ZERO (DIV_INT (th->recent_cpu, 4))
                             - (th->nice * 2);
               
               /* Clamp priority between PRI_MIN and PRI_MAX. */
@@ -205,6 +211,29 @@ thread_tick (void)
                 new_priority = PRI_MAX;
               
               th->priority = new_priority;
+            }
+          
+          /* Rebuild ready_list ordering by updated priorities. */
+          if (!list_empty (&ready_list))
+            {
+              struct list_elem *e = list_begin (&ready_list);
+              while (e != list_end (&ready_list))
+                {
+                  struct thread *rt = list_entry (e, struct thread, elem);
+                  /* Advance iterator before removing current element. */
+                  e = list_next (e);
+                  list_remove (&rt->elem);
+                  list_insert_ordered (&ready_list, &rt->elem, thread_priority_less, NULL);
+                }
+            }
+          
+          /* If a higher-priority thread is now ready, preempt current on interrupt return. */
+          if (!list_empty (&ready_list))
+            {
+              struct thread *highest_ready =
+                list_entry (list_front (&ready_list), struct thread, elem);
+              if (highest_ready->priority > t->priority)
+                intr_yield_on_return ();
             }
         }
     }
@@ -274,7 +303,19 @@ thread_create (const char *name, int priority,
   tid = t->tid = allocate_tid ();
   
   t->nice = thread_current ()->nice;
-  t->recent_cpu = 0;
+  t->recent_cpu = thread_current ()->recent_cpu;
+
+  /* In MLFQS mode, compute initial priority before unblocking. */
+  if (thread_mlfqs)
+    {
+      int new_priority = PRI_MAX
+                         - FP_TO_INT_ZERO (DIV_INT (t->recent_cpu, 4))
+                         - (t->nice * 2);
+      if (new_priority < PRI_MIN) new_priority = PRI_MIN;
+      if (new_priority > PRI_MAX) new_priority = PRI_MAX;
+      t->priority = new_priority;
+      t->base_priority = new_priority;
+    }
 
   kf = alloc_frame (t, sizeof *kf);
   kf->eip = NULL;
@@ -289,6 +330,9 @@ thread_create (const char *name, int priority,
   sf->ebp = 0;
 
   thread_unblock (t);
+
+  if (t->priority > thread_current ()->priority)
+    thread_yield ();
         
   return tid;
 }
@@ -328,17 +372,8 @@ thread_unblock (struct thread *t)
   ASSERT (t->status == THREAD_BLOCKED);
   list_insert_ordered (&ready_list, &t->elem, thread_priority_less, NULL);
   t->status = THREAD_READY;
-  
-  /* Check if the current thread should yield to the unblocked one. */
-  if (thread_current () != idle_thread && t->priority > thread_current ()->priority)
-    {
-      if (intr_context ())
-        intr_yield_on_return ();
-      else
-        thread_yield ();
-    }
-  
   intr_set_level (old_level);
+
 }
 
 /* Returns the name of the running thread. */
@@ -471,6 +506,10 @@ thread_set_priority (int new_priority)
 {
   struct thread *cur = thread_current ();
   
+  /* In MLFQS mode, explicit priority setting is ignored. */
+  if (thread_mlfqs)
+    return;
+  
   /* Update base_priority instead of priority. */
   cur->base_priority = new_priority;
   
@@ -504,7 +543,7 @@ thread_set_nice (int nice)
   cur->nice = nice;
   
   /* Recalculate priority: priority = PRI_MAX - (recent_cpu / 4) - (nice * 2) */
-  new_priority = PRI_MAX - FP_TO_INT_NEAREST (DIV_INT (cur->recent_cpu, 4))
+  new_priority = PRI_MAX - FP_TO_INT_ZERO (DIV_INT (cur->recent_cpu, 4))
                 - (cur->nice * 2);
   
   /* Clamp priority between PRI_MIN and PRI_MAX. */
