@@ -6,6 +6,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "threads/synch.h"
+#ifdef USERPROG
+#include "lib/kernel/hash.h"
+#endif
 
 /* States in a thread's life cycle. */
 enum thread_status
@@ -124,6 +127,9 @@ struct thread
     struct file *fd_table[FD_MAX];      /* File descriptor table. */
     int next_fd;                        /* Next available file descriptor. */
     struct file *executable_file;       /* Currently running executable file. */
+    
+    /* Virtual memory. */
+    struct hash vm;                     /* Supplemental page table. */
 #endif
 
     /* Owned by thread.c. */
