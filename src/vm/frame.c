@@ -103,11 +103,9 @@ free_frame (void *kpage)
   struct list_elem *e;
   struct frame_entry *fe = NULL;
 
-  printf ("[DEBUG] free_frame: kpage=%p\n", kpage);
 
   if (kpage == NULL)
     {
-      printf ("[DEBUG] free_frame: kpage is NULL, returning\n");
       return;
     }
 
@@ -121,7 +119,6 @@ free_frame (void *kpage)
       if (fe->frame == kpage)
         {
           /* Remove from frame table. */
-          printf ("[DEBUG] free_frame: Found frame_entry, removing from table\n");
           list_remove (e);
           break;
         }
@@ -131,17 +128,13 @@ free_frame (void *kpage)
 
   if (fe == NULL)
     {
-      printf ("[DEBUG] free_frame: Frame not found in table - PANIC\n");
       PANIC ("Attempted to free non-existent frame");
     }
 
   /* Free the frame_entry structure. */
-  printf ("[DEBUG] free_frame: Freeing frame_entry struct\n");
   free (fe);
 
   /* Free the physical page. */
-  printf ("[DEBUG] free_frame: Freeing physical page kpage=%p\n", kpage);
   palloc_free_page (kpage);
-  printf ("[DEBUG] free_frame: Done\n");
 }
 

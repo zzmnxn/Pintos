@@ -712,7 +712,6 @@ init_thread (struct thread *t, const char *name, int priority)
   ASSERT (name != NULL);
 
   memset (t, 0, sizeof *t);
-  t->status = THREAD_BLOCKED;
   strlcpy (t->name, name, sizeof t->name);
   t->stack = (uint8_t *) t + PGSIZE;
   t->priority = priority;
@@ -738,15 +737,11 @@ init_thread (struct thread *t, const char *name, int priority)
     t->fd_table[i] = NULL;
   t->next_fd = 2;  /* Start from 2 (0=STDIN, 1=STDOUT reserved) */
   t->executable_file = NULL;
-  
-#ifdef VM
-  /* Initialize supplemental page table */
-  vm_init (&t->vm);
-#endif
 #endif
 
   old_level = intr_disable ();
   list_push_back (&all_list, &t->allelem);
+  t->status = THREAD_BLOCKED;
   intr_set_level (old_level);
 }
 
@@ -803,17 +798,12 @@ thread_schedule_tail (struct thread *prev)
   /* Mark us as running. */
   cur->status = THREAD_RUNNING;
 
-  printf ("[DEBUG] thread_schedule_tail: thread=%s, status=%d, pagedir=%p\n",
-          cur->name, (int)cur->status, (void *)cur->pagedir);
-
   /* Start new time slice. */
   thread_ticks = 0;
 
 #ifdef USERPROG
   /* Activate the new address space. */
-  printf ("[DEBUG] thread_schedule_tail: Before process_activate()\n");
   process_activate ();
-  printf ("[DEBUG] thread_schedule_tail: After process_activate()\n");
 #endif
 
   /* If the thread we switched from is dying, destroy its struct

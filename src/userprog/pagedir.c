@@ -34,7 +34,6 @@ pagedir_destroy (uint32_t *pd)
     return;
 
   ASSERT (pd != init_page_dir);
-  printf ("[DEBUG] pagedir_destroy: START, pd=%p\n", (void *)pd);
   for (pde = pd; pde < pd + pd_no (PHYS_BASE); pde++)
     if (*pde & PTE_P) 
       {
@@ -45,15 +44,11 @@ pagedir_destroy (uint32_t *pd)
           if (*pte & PTE_P) 
             {
               void *page = pte_get_page (*pte);
-              printf ("[DEBUG] pagedir_destroy: freeing kpage=%p\n", page);
               palloc_free_page (page);
             }
-        printf ("[DEBUG] pagedir_destroy: freeing page table pt=%p\n", (void *)pt);
         palloc_free_page (pt);
       }
-  printf ("[DEBUG] pagedir_destroy: freeing page directory pd=%p\n", (void *)pd);
   palloc_free_page (pd);
-  printf ("[DEBUG] pagedir_destroy: END\n");
 }
 
 /* Returns the address of the page table entry for virtual

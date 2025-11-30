@@ -6,12 +6,14 @@
 #include "threads/malloc.h"
 #include "threads/thread.h"
 #include "filesys/file.h"
-#include "userprog/syscall.h"
 #include "userprog/pagedir.h"
 #include "vm/frame.h"
 #include "threads/synch.h"
 #include <string.h>
 #include "lib/kernel/list.h"
+
+/* External filesystem lock from syscall.c */
+extern struct lock filesys_lock;
 
 /* Hash function for vm_entry: hashes by virtual address (page-aligned). */
 static unsigned

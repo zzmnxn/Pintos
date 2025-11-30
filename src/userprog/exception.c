@@ -144,7 +144,7 @@ page_fault (struct intr_frame *f)
      be assured of reading CR2 before it changed). */
   intr_enable ();
   
-  printf ("[DEBUG] page_fault: START, fault_addr=%p\n", fault_addr);
+  //printf ("PF: 1. fault_addr=%p\n", fault_addr);
 
   /* Count page faults. */
   page_fault_cnt++;
@@ -155,37 +155,28 @@ page_fault (struct intr_frame *f)
   user = (f->error_code & PF_U) != 0;
 
   /* Only handle user mode page faults for demand paging. */
-  if (!user)
+  if (!user && !is_user_vaddr(fault_addr))
     {
-      /* Kernel page fault - this should not happen */
-      printf ("Page fault at %p: %s error %s page in %s context.\n",
-              fault_addr,
-              not_present ? "not present" : "rights violation",
-              write ? "writing" : "reading",
-              user ? "user" : "kernel");
       PANIC ("Kernel bug - unexpected page fault in kernel");
     }
 
   /* Validate fault address. */
-  if (!is_user_vaddr (fault_addr))
+  if (!is_user_vaddr (fault_addr) || fault_addr == NULL)
     {
-      printf ("[DEBUG] page_fault: Invalid address=%p\n", fault_addr);
       /* Invalid address - terminate the process */
-      struct thread *cur = thread_current ();
+      struct thread *cur = running_thread ();
       cur->exit_status = -1;
       cur->has_exited = true;
-      printf ("%s: exit(-1)\n", cur->name);
+      //printf ("%s: exit(-1)\n", cur->name);
       thread_exit ();
     }
 
   /* Get the page-aligned virtual address. */
   void *page_addr = pg_round_down (fault_addr);
   
-  printf ("[DEBUG] page_fault: START, fault_addr=%p, page_addr=%p\n", fault_addr, page_addr);
+  struct thread *cur = running_thread ();
   
-  struct thread *cur = thread_current ();
-  
-  printf ("[DEBUG] page_fault: thread=%s, status=%d\n", cur->name, (int)cur->status);
+ // printf ("PF: 2. page_addr=%p, thread=%s\n", page_addr, cur->name);
 
   /* Find the vm_entry in the supplemental page table. */
   struct vm_entry *vme = vm_find (&cur->vm, page_addr);
@@ -193,25 +184,29 @@ page_fault (struct intr_frame *f)
   if (vme == NULL)
     {
       /* No vm_entry found - invalid access */
+      //printf ("PF: No vm_entry found - terminating\n");
       cur->exit_status = -1;
       cur->has_exited = true;
-      printf ("%s: exit(-1)\n", cur->name);
+      //printf ("%s: exit(-1)\n", cur->name);
       thread_exit ();
     }
 
   /* Check if page is already loaded. */
   if (vme->is_loaded)
     {
+      //printf ("PF: Page already loaded - checking permissions\n");
       /* Page is already loaded - should not fault unless there's a rights violation */
       if (!not_present && write && !vme->writable)
         {
           /* Writing to read-only page */
+          //printf ("PF: Write to read-only page - terminating\n");
           cur->exit_status = -1;
           cur->has_exited = true;
-          printf ("%s: exit(-1)\n", cur->name);
+          //printf ("%s: exit(-1)\n", cur->name);
           thread_exit ();
         }
       /* Otherwise, this shouldn't happen - terminate */
+      //printf ("PF: Already loaded but faulted - terminating\n");
       cur->exit_status = -1;
       cur->has_exited = true;
       printf ("%s: exit(-1)\n", cur->name);
@@ -224,11 +219,12 @@ page_fault (struct intr_frame *f)
       /* Attempting to write to read-only page */
       cur->exit_status = -1;
       cur->has_exited = true;
-      printf ("%s: exit(-1)\n", cur->name);
+      //printf ("%s: exit(-1)\n", cur->name);
       thread_exit ();
     }
 
   /* Allocate a frame for this page. */
+  //printf ("PF: 4. Allocating frame\n");
   void *kpage = allocate_frame (PAL_USER);
   if (kpage == NULL)
     {
@@ -238,7 +234,7 @@ page_fault (struct intr_frame *f)
       printf ("%s: exit(-1)\n", cur->name);
       thread_exit ();
     }
-
+  
   /* Load the page data. */
   if (!vm_load_page (vme, kpage))
     {

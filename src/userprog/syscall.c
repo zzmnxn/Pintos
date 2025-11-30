@@ -46,22 +46,18 @@ syscall_init (void)
 static void
 syscall_handler (struct intr_frame *f) 
 {
-  printf ("[DEBUG] syscall_handler: START\n");
   
   int syscall_number;
   
-  printf ("[DEBUG] syscall_handler: Before is_valid_ptr\n");
   
   /* Get system call number from user stack with memory protection */
   if (!is_valid_ptr (f->esp, 4))
     {
-      printf ("[DEBUG] syscall_handler: Invalid esp pointer\n");
       syscall_exit (-1);
     }
   
   syscall_number = *(int *) f->esp;
   
-  printf ("[DEBUG] syscall_handler: syscall_number=%d\n", syscall_number);
   
   /* Handle different system calls */
   switch (syscall_number)
@@ -249,11 +245,9 @@ syscall_handler (struct intr_frame *f)
 static bool
 check_user_address (const void *vaddr)
 {
-  printf ("[DEBUG] check_user_address: vaddr=%p\n", vaddr);
   
   struct thread *cur = thread_current ();  // 여기서 Panic 발생 가능!
   
-  printf ("[DEBUG] check_user_address: thread=%s\n", cur->name);
   
   /* Check for NULL pointer */
   if (vaddr == NULL)

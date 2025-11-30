@@ -291,16 +291,13 @@ run_task (char **argv)
 {
   const char *task = argv[1];
   
-  printf ("[DEBUG] run_task: START, task=%s\n", task);
   printf ("Executing '%s':\n", task);
   
-  printf ("[DEBUG] run_task: Before process_execute\n");
 #ifdef USERPROG
   process_wait (process_execute (task));
 #else
   run_test (task);
 #endif
-  printf ("[DEBUG] run_task: After process_wait\n");
   printf ("Execution of '%s' complete.\n", task);
 }
 

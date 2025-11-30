@@ -107,4 +107,5 @@ tss_update (void)
 {
   ASSERT (tss != NULL);
   tss->esp0 = (uint8_t *) running_thread () + PGSIZE;
+  tss->ss0 = SEL_KDSEG;
 }
