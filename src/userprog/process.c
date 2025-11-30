@@ -40,7 +40,9 @@ process_execute (const char *file_name)
 
   printf ("[DEBUG] process_execute: START, file_name=%s\n", file_name);
   
-  cur = thread_current ();
+  /* Get current thread - may be in BLOCKED state if called during context switch.
+     Use running_thread() instead of thread_current() to avoid assertion failure. */
+  cur = running_thread ();
   
   printf ("[DEBUG] process_execute: cur thread=%s, status=%d\n", 
           cur->name, (int)cur->status);
@@ -183,13 +185,11 @@ process_wait (tid_t child_tid)
   printf ("[DEBUG] process_wait: START, child_tid=%d\n", child_tid);
   
   /* Get current thread - but we might be in BLOCKED state if called after sema_down.
-     Use running_thread() directly instead of thread_current() to avoid assertion. */
-  {
-    uint32_t *esp;
-    asm ("mov %%esp, %0" : "=g" (esp));
-    cur = (struct thread *) pg_round_down (esp);
-    printf ("[DEBUG] process_wait: cur=%p, status=%d\n", (void *)cur, (int)cur->status);
-  }
+     Use running_thread() instead of thread_current() to avoid assertion failure. */
+  cur = running_thread ();
+  
+  printf ("[DEBUG] process_wait: cur thread=%s, status=%d\n", 
+          cur->name, (int)cur->status);
   
   /* Search for the child in our children list.
      Note: We must NOT use get_thread_by_tid() because the child thread

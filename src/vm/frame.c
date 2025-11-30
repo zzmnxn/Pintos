@@ -63,16 +63,16 @@ allocate_frame (enum palloc_flags flags)
    IMPORTANT: This function MUST NEVER call palloc_free_page() - it only removes
    the frame_entry from the table and frees the frame_entry struct itself. */
 void
-remove_frame_entry (void *kpage)
+remove_frame_from_table (void *kpage)
 {
   struct list_elem *e;
   struct frame_entry *fe = NULL;
 
-  printf ("[DEBUG] remove_frame_entry: kpage=%p\n", kpage);
+  printf ("[DEBUG] remove_frame_from_table: kpage=%p\n", kpage);
 
   if (kpage == NULL)
     {
-      printf ("[DEBUG] remove_frame_entry: kpage is NULL, returning\n");
+      printf ("[DEBUG] remove_frame_from_table: kpage is NULL, returning\n");
       return;
     }
 
@@ -86,7 +86,7 @@ remove_frame_entry (void *kpage)
       if (fe->frame == kpage)
         {
           /* Remove from frame table. */
-          printf ("[DEBUG] remove_frame_entry: Found frame_entry, removing from table\n");
+          printf ("[DEBUG] remove_frame_from_table: Found frame_entry, removing from table\n");
           list_remove (e);
           break;
         }
@@ -96,15 +96,15 @@ remove_frame_entry (void *kpage)
 
   if (fe == NULL)
     {
-      printf ("[DEBUG] remove_frame_entry: Frame not found in table - PANIC\n");
+      printf ("[DEBUG] remove_frame_from_table: Frame not found in table - PANIC\n");
       PANIC ("Attempted to remove non-existent frame");
     }
 
   /* Free the frame_entry structure only. Physical page is NOT freed here.
      This is critical - the physical memory will be freed by pagedir_destroy(). */
-  printf ("[DEBUG] remove_frame_entry: Freeing frame_entry struct only (NOT physical page)\n");
+  printf ("[DEBUG] remove_frame_from_table: Freeing frame_entry struct only (NOT physical page)\n");
   free (fe);
-  printf ("[DEBUG] remove_frame_entry: Done\n");
+  printf ("[DEBUG] remove_frame_from_table: Done\n");
 }
 
 /* Frees a frame. */

@@ -53,16 +53,16 @@ vm_entry_destructor (struct hash_elem *e, void *aux)
 
       if (kpage != NULL)
         {
-          printf ("[DEBUG] vm_entry_destructor: Calling remove_frame_entry\n");
+          printf ("[DEBUG] vm_entry_destructor: Calling remove_frame_from_table\n");
           
           /* Remove frame from frame table without freeing physical memory.
              This prevents double-free: the physical memory will be freed later
              by pagedir_destroy(). We also avoid calling pagedir_clear_page()
              to prevent TLB invalidation (which calls pagedir_activate) during
              process exit, which could cause context switch and thread state issues. */
-          remove_frame_entry (kpage);
+          remove_frame_from_table (kpage);
           
-          printf ("[DEBUG] vm_entry_destructor: After remove_frame_entry\n");
+          printf ("[DEBUG] vm_entry_destructor: After remove_frame_from_table\n");
         }
     }
 

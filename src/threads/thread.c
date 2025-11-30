@@ -297,8 +297,13 @@ thread_create (const char *name, int priority,
   init_thread (t, name, priority);
   tid = t->tid = allocate_tid ();
   
-  t->nice = thread_current ()->nice;
-  t->recent_cpu = thread_current ()->recent_cpu;
+  /* Use running_thread() instead of thread_current() to avoid assertion failure
+     when current thread is not in THREAD_RUNNING state (e.g., during context switch). */
+  {
+    struct thread *cur = running_thread ();
+    t->nice = cur->nice;
+    t->recent_cpu = cur->recent_cpu;
+  }
 
   /* In MLFQS mode, compute initial priority before unblocking. */
   if (thread_mlfqs)
@@ -326,8 +331,13 @@ thread_create (const char *name, int priority,
 
   thread_unblock (t);
 
-  if (t->priority > thread_current ()->priority)
-    thread_yield ();
+  /* Use running_thread() instead of thread_current() to avoid assertion failure
+     when current thread is not in THREAD_RUNNING state. */
+  {
+    struct thread *cur = running_thread ();
+    if (t->priority > cur->priority)
+      thread_yield ();
+  }
         
   return tid;
 }
@@ -383,12 +393,17 @@ thread_unblock (struct thread *t)
   t->status = THREAD_READY;
   
   /* If the unblocked thread has higher priority, preempt current thread.
-     This is critical for correct behavior in interrupt contexts (e.g., timer). */
-  if (thread_current () != idle_thread && t->priority > thread_current ()->priority)
-    {
-      if (intr_context ())
-        intr_yield_on_return ();
-    }
+     This is critical for correct behavior in interrupt contexts (e.g., timer).
+     Use running_thread() instead of thread_current() to avoid assertion failure
+     when current thread is not in THREAD_RUNNING state. */
+  {
+    struct thread *cur = running_thread ();
+    if (cur != idle_thread && t->priority > cur->priority)
+      {
+        if (intr_context ())
+          intr_yield_on_return ();
+      }
+  }
   
   intr_set_level (old_level);
 
@@ -408,21 +423,6 @@ struct thread *
 thread_current (void) 
 {
   struct thread *t = running_thread ();
-  
-  /* Debug: Print thread info before assertions */
-  printf ("[DEBUG] thread_current: t=%p\n", (void *)t);
-  if (t != NULL)
-    {
-      printf ("[DEBUG] thread_current: magic=0x%x (expected 0x%x), status=%d (expected %d=%s)\n",
-              t->magic, THREAD_MAGIC, (int)t->status, 
-              (int)THREAD_RUNNING, t->status == THREAD_RUNNING ? "RUNNING" : "NOT_RUNNING");
-      if (t->magic == THREAD_MAGIC)
-        printf ("[DEBUG] thread_current: thread name=%s\n", t->name);
-    }
-  else
-    {
-      printf ("[DEBUG] thread_current: t is NULL!\n");
-    }
   
   /* Make sure T is really a thread.
      If either of these assertions fire, then your thread may

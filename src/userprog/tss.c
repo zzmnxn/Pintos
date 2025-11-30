@@ -97,10 +97,14 @@ tss_get (void)
 }
 
 /* Sets the ring 0 stack pointer in the TSS to point to the end
-   of the thread stack. */
+   of the thread stack.
+   
+   IMPORTANT: We use running_thread() instead of thread_current() to avoid
+   assertion failure when called from process_activate() during context switches,
+   where the thread status may not yet be fully set to THREAD_RUNNING. */
 void
 tss_update (void) 
 {
   ASSERT (tss != NULL);
-  tss->esp0 = (uint8_t *) thread_current () + PGSIZE;
+  tss->esp0 = (uint8_t *) running_thread () + PGSIZE;
 }
