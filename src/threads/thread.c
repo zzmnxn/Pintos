@@ -15,6 +15,9 @@
 #include "devices/timer.h"
 #ifdef USERPROG
 #include "userprog/process.h"
+#ifdef VM
+#include "vm/page.h"
+#endif
 #endif
 
 /* Random value for struct thread's `magic' member.
@@ -717,6 +720,11 @@ init_thread (struct thread *t, const char *name, int priority)
     t->fd_table[i] = NULL;
   t->next_fd = 2;  /* Start from 2 (0=STDIN, 1=STDOUT reserved) */
   t->executable_file = NULL;
+  
+#ifdef VM
+  /* Initialize supplemental page table */
+  vm_init (&t->vm);
+#endif
 #endif
 
   old_level = intr_disable ();

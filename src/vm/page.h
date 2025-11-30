@@ -44,6 +44,7 @@ void vm_destroy (struct hash *vm);
 struct vm_entry *vm_find (struct hash *vm, void *vaddr);
 bool vm_insert (struct hash *vm, struct vm_entry *vme);
 bool vm_delete (struct hash *vm, struct vm_entry *vme);
+bool vm_load_page (struct vm_entry *vme, void *kpage);
 
 #endif /* vm/page.h */
 

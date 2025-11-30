@@ -15,7 +15,7 @@
 typedef int pid_t;
 
 /* Global file system lock for synchronization */
-static struct lock filesys_lock;
+struct lock filesys_lock;
 
 static void syscall_handler (struct intr_frame *);
 static void syscall_halt (void);

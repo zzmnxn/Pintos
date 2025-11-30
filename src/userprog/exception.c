@@ -4,6 +4,10 @@
 #include "userprog/gdt.h"
 #include "threads/interrupt.h"
 #include "threads/thread.h"
+#include "threads/vaddr.h"
+#include "userprog/process.h"
+#include "vm/page.h"
+#include "vm/frame.h"
 
 /* Number of page faults processed. */
 static long long page_fault_cnt;
@@ -148,23 +152,8 @@ page_fault (struct intr_frame *f)
   write = (f->error_code & PF_W) != 0;
   user = (f->error_code & PF_U) != 0;
 
-  /* If page fault occurred in user mode, terminate the process with exit(-1) */
-  if (user)
-    {
-      printf ("Page fault at %p: %s error %s page in %s context.\n",
-              fault_addr,
-              not_present ? "not present" : "rights violation",
-              write ? "writing" : "reading",
-              user ? "user" : "kernel");
-      
-      /* Terminate the current process with exit status -1 */
-      struct thread *cur = thread_current ();
-      cur->exit_status = -1;
-      cur->has_exited = true;
-      printf ("%s: exit(-1)\n", cur->name);
-      thread_exit ();
-    }
-  else
+  /* Only handle user mode page faults for demand paging. */
+  if (!user)
     {
       /* Kernel page fault - this should not happen */
       printf ("Page fault at %p: %s error %s page in %s context.\n",
@@ -174,5 +163,97 @@ page_fault (struct intr_frame *f)
               user ? "user" : "kernel");
       PANIC ("Kernel bug - unexpected page fault in kernel");
     }
+
+  /* Validate fault address. */
+  if (!is_user_vaddr (fault_addr))
+    {
+      /* Invalid address - terminate the process */
+      struct thread *cur = thread_current ();
+      cur->exit_status = -1;
+      cur->has_exited = true;
+      printf ("%s: exit(-1)\n", cur->name);
+      thread_exit ();
+    }
+
+  /* Get the page-aligned virtual address. */
+  void *page_addr = pg_round_down (fault_addr);
+  struct thread *cur = thread_current ();
+
+  /* Find the vm_entry in the supplemental page table. */
+  struct vm_entry *vme = vm_find (&cur->vm, page_addr);
+  
+  if (vme == NULL)
+    {
+      /* No vm_entry found - invalid access */
+      cur->exit_status = -1;
+      cur->has_exited = true;
+      printf ("%s: exit(-1)\n", cur->name);
+      thread_exit ();
+    }
+
+  /* Check if page is already loaded. */
+  if (vme->is_loaded)
+    {
+      /* Page is already loaded - should not fault unless there's a rights violation */
+      if (!not_present && write && !vme->writable)
+        {
+          /* Writing to read-only page */
+          cur->exit_status = -1;
+          cur->has_exited = true;
+          printf ("%s: exit(-1)\n", cur->name);
+          thread_exit ();
+        }
+      /* Otherwise, this shouldn't happen - terminate */
+      cur->exit_status = -1;
+      cur->has_exited = true;
+      printf ("%s: exit(-1)\n", cur->name);
+      thread_exit ();
+    }
+
+  /* Check write permission. */
+  if (write && !vme->writable)
+    {
+      /* Attempting to write to read-only page */
+      cur->exit_status = -1;
+      cur->has_exited = true;
+      printf ("%s: exit(-1)\n", cur->name);
+      thread_exit ();
+    }
+
+  /* Allocate a frame for this page. */
+  void *kpage = allocate_frame (PAL_USER);
+  if (kpage == NULL)
+    {
+      /* Frame allocation failed */
+      cur->exit_status = -1;
+      cur->has_exited = true;
+      printf ("%s: exit(-1)\n", cur->name);
+      thread_exit ();
+    }
+
+  /* Load the page data. */
+  if (!vm_load_page (vme, kpage))
+    {
+      /* Failed to load page data - free the frame and terminate */
+      free_frame (kpage);
+      cur->exit_status = -1;
+      cur->has_exited = true;
+      printf ("%s: exit(-1)\n", cur->name);
+      thread_exit ();
+    }
+
+  /* Map the page in the page table. */
+  if (!install_page (page_addr, kpage, vme->writable))
+    {
+      /* Failed to install page - free the frame and terminate */
+      free_frame (kpage);
+      cur->exit_status = -1;
+      cur->has_exited = true;
+      printf ("%s: exit(-1)\n", cur->name);
+      thread_exit ();
+    }
+
+  /* Mark the page as loaded. */
+  vme->is_loaded = true;
 }
 

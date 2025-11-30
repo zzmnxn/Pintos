@@ -18,6 +18,9 @@
 #include "threads/thread.h"
 #include "threads/synch.h"
 #include "threads/vaddr.h"
+#include "threads/malloc.h"
+#include "vm/page.h"
+#include "vm/frame.h"
 
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
@@ -256,6 +259,9 @@ process_exit (void)
       file_close (cur->executable_file);
       cur->executable_file = NULL;
     }
+
+  /* Destroy the supplemental page table. */
+  vm_destroy (&cur->vm);
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
@@ -525,7 +531,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
 
 /* load() helpers. */
 
-static bool install_page (void *upage, void *kpage, bool writable);
+bool install_page (void *upage, void *kpage, bool writable);
 
 /* Checks whether PHDR describes a valid, loadable segment in
    FILE and returns true if so, false otherwise. */
@@ -584,8 +590,10 @@ validate_segment (const struct Elf32_Phdr *phdr, struct file *file)
    The pages initialized by this function must be writable by the
    user process if WRITABLE is true, read-only otherwise.
 
-   Return true if successful, false if a memory allocation error
-   or disk read error occurs. */
+   This function now creates vm_entry structs for lazy loading instead
+   of immediately loading pages.
+
+   Return true if successful, false if a memory allocation error occurs. */
 static bool
 load_segment (struct file *file, off_t ofs, uint8_t *upage,
               uint32_t read_bytes, uint32_t zero_bytes, bool writable) 
@@ -594,7 +602,9 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
   ASSERT (pg_ofs (upage) == 0);
   ASSERT (ofs % PGSIZE == 0);
 
-  file_seek (file, ofs);
+  struct thread *t = thread_current ();
+  off_t current_offset = ofs;
+  
   while (read_bytes > 0 || zero_bytes > 0) 
     {
       /* Calculate how to fill this page.
@@ -603,30 +613,34 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
       size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
-      /* Get a page of memory. */
-      uint8_t *kpage = palloc_get_page (PAL_USER);
-      if (kpage == NULL)
+      /* Allocate a vm_entry for this page. */
+      struct vm_entry *vme = malloc (sizeof (struct vm_entry));
+      if (vme == NULL)
         return false;
 
-      /* Load this page. */
-      if (file_read (file, kpage, page_read_bytes) != (int) page_read_bytes)
-        {
-          palloc_free_page (kpage);
-          return false; 
-        }
-      memset (kpage + page_read_bytes, 0, page_zero_bytes);
+      /* Initialize vm_entry. */
+      vme->type = VM_BIN;
+      vme->vaddr = upage;
+      vme->writable = writable;
+      vme->is_loaded = false;
+      vme->file = file;  /* Use file_reopen to get a separate reference if needed */
+      vme->offset = current_offset;
+      vme->read_bytes = page_read_bytes;
+      vme->zero_bytes = page_zero_bytes;
+      vme->swap_slot = 0;
 
-      /* Add the page to the process's address space. */
-      if (!install_page (upage, kpage, writable)) 
+      /* Insert into supplemental page table. */
+      if (!vm_insert (&t->vm, vme))
         {
-          palloc_free_page (kpage);
-          return false; 
+          free (vme);
+          return false;
         }
 
       /* Advance. */
       read_bytes -= page_read_bytes;
       zero_bytes -= page_zero_bytes;
       upage += PGSIZE;
+      current_offset += page_read_bytes;
     }
   return true;
 }
@@ -636,18 +650,56 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 static bool
 setup_stack (void **esp) 
 {
+  struct thread *t = thread_current ();
+  void *upage = ((uint8_t *) PHYS_BASE) - PGSIZE;
   uint8_t *kpage;
+  struct vm_entry *vme;
   bool success = false;
 
-  kpage = palloc_get_page (PAL_USER | PAL_ZERO);
-  if (kpage != NULL) 
+  /* Allocate and initialize vm_entry for stack page. */
+  vme = malloc (sizeof (struct vm_entry));
+  if (vme == NULL)
+    return false;
+
+  vme->type = VM_ANON;
+  vme->vaddr = upage;
+  vme->writable = true;
+  vme->is_loaded = true;  /* Will be loaded immediately */
+  vme->file = NULL;
+  vme->offset = 0;
+  vme->read_bytes = 0;
+  vme->zero_bytes = PGSIZE;
+  vme->swap_slot = 0;
+
+  /* Insert into supplemental page table. */
+  if (!vm_insert (&t->vm, vme))
     {
-      success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
-      if (success)
-        *esp = PHYS_BASE;
-      else
-        palloc_free_page (kpage);
+      free (vme);
+      return false;
     }
+
+  /* Allocate frame and load the first stack page immediately. */
+  kpage = allocate_frame (PAL_USER | PAL_ZERO);
+  if (kpage == NULL)
+    {
+      vm_delete (&t->vm, vme);
+      free (vme);
+      return false;
+    }
+
+  /* Map the page. */
+  success = install_page (upage, kpage, true);
+  if (success)
+    {
+      *esp = PHYS_BASE;
+    }
+  else
+    {
+      free_frame (kpage);
+      vm_delete (&t->vm, vme);
+      free (vme);
+    }
+  
   return success;
 }
 
@@ -779,7 +831,7 @@ setup_args (const char *cmdline, void **esp)
    with palloc_get_page().
    Returns true on success, false if UPAGE is already mapped or
    if memory allocation fails. */
-static bool
+bool
 install_page (void *upage, void *kpage, bool writable)
 {
   struct thread *t = thread_current ();
