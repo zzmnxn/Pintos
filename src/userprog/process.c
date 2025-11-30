@@ -35,8 +35,15 @@ process_execute (const char *file_name)
   char *fn_copy;
   char *program_name;
   tid_t tid;
-  struct thread *cur = thread_current ();
+  struct thread *cur;
   struct thread *child;
+
+  printf ("[DEBUG] process_execute: START, file_name=%s\n", file_name);
+  
+  cur = thread_current ();
+  
+  printf ("[DEBUG] process_execute: cur thread=%s, status=%d\n", 
+          cur->name, (int)cur->status);
 
   /* Extract program name from command line */
   program_name = palloc_get_page (0);
@@ -118,14 +125,24 @@ start_process (void *file_name_)
   char *file_name = file_name_;
   struct intr_frame if_;
   bool success;
-  struct thread *cur = thread_current ();
+  struct thread *cur;
+
+  printf ("[DEBUG] start_process: START\n");
+  
+  cur = thread_current ();
+  
+  printf ("[DEBUG] start_process: thread=%s, status=%d\n", 
+          cur->name, (int)cur->status);
 
   /* Initialize interrupt frame and load executable. */
   memset (&if_, 0, sizeof if_);
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
+  
+  printf ("[DEBUG] start_process: Before load()\n");
   success = load (file_name, &if_.eip, &if_.esp);
+  printf ("[DEBUG] start_process: After load(), success=%d\n", success);
 
   /* Set load success status and signal parent */
   cur->load_success = success;
@@ -158,10 +175,21 @@ start_process (void *file_name_)
 int
 process_wait (tid_t child_tid) 
 {
-  struct thread *cur = thread_current ();
+  struct thread *cur;
   struct list_elem *e;
   struct thread *child = NULL;
   int exit_status;
+
+  printf ("[DEBUG] process_wait: START, child_tid=%d\n", child_tid);
+  
+  /* Get current thread - but we might be in BLOCKED state if called after sema_down.
+     Use running_thread() directly instead of thread_current() to avoid assertion. */
+  {
+    uint32_t *esp;
+    asm ("mov %%esp, %0" : "=g" (esp));
+    cur = (struct thread *) pg_round_down (esp);
+    printf ("[DEBUG] process_wait: cur=%p, status=%d\n", (void *)cur, (int)cur->status);
+  }
   
   /* Search for the child in our children list.
      Note: We must NOT use get_thread_by_tid() because the child thread
@@ -212,6 +240,9 @@ process_exit (void)
 {
   struct thread *cur = thread_current ();
   uint32_t *pd;
+  enum intr_level old_level;
+
+  printf ("[DEBUG] process_exit: START for thread %s\n", cur->name);
 
   /* Set exit status if not already set (e.g., killed by kernel) */
   if (!cur->has_exited)
@@ -222,9 +253,21 @@ process_exit (void)
       printf ("%s: exit(%d)\n", cur->name, cur->exit_status);
     }
   
+  printf ("[DEBUG] process_exit: Before sema_up, thread status = %d\n", (int)cur->status);
+  
+  /* Disable interrupts before signaling semaphore to prevent context switch
+     during cleanup. The sema_up may call thread_yield if another thread
+     has higher priority, which could change our thread status. */
+  old_level = intr_disable ();
+  
   /* Signal parent process that we're exiting by signaling our own exit_sema.
      The parent waits on child->exit_sema in process_wait(). */
   sema_up (&cur->exit_sema);
+  
+  /* Re-enable interrupts after sema_up */
+  intr_set_level (old_level);
+  
+  printf ("[DEBUG] process_exit: After sema_up, thread status = %d\n", (int)cur->status);
 
   /* Clean up any children that we haven't waited on.
      Set their parent pointers to NULL so they'll be freed when they exit. */
@@ -260,14 +303,21 @@ process_exit (void)
       cur->executable_file = NULL;
     }
 
-  /* Destroy the supplemental page table. */
-  vm_destroy (&cur->vm);
+  printf ("[DEBUG] process_exit: Before vm_destroy\n");
+  
+  /* Destroy the supplemental page table.
+     Save pagedir before destroying so destructor can use it. */
+  pd = cur->pagedir;
+  vm_destroy (&cur->vm, pd);
+  
+  printf ("[DEBUG] process_exit: After vm_destroy, thread status = %d\n", (int)cur->status);
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
-  pd = cur->pagedir;
   if (pd != NULL) 
     {
+      printf ("[DEBUG] process_exit: Before pagedir cleanup\n");
+      
       /* Correct ordering here is crucial.  We must set
          cur->pagedir to NULL before switching page directories,
          so that a timer interrupt can't switch back to the
@@ -278,23 +328,39 @@ process_exit (void)
       cur->pagedir = NULL;
       pagedir_activate (NULL);
       pagedir_destroy (pd);
+      
+      printf ("[DEBUG] process_exit: After pagedir cleanup\n");
     }
+  
+  printf ("[DEBUG] process_exit: END for thread %s\n", cur->name);
 }
 
 /* Sets up the CPU for running user code in the current
    thread.
-   This function is called on every context switch. */
+   This function is called on every context switch.
+   
+   IMPORTANT: We use running_thread() instead of thread_current() here because
+   this function is called from thread_schedule_tail() during context switches,
+   where the thread status may not yet be fully set to THREAD_RUNNING, causing
+   thread_current()'s assertion to fail. */
 void
 process_activate (void)
 {
-  struct thread *t = thread_current ();
+  struct thread *t = running_thread ();
 
-  /* Activate thread's page tables. */
-  pagedir_activate (t->pagedir);
+  printf ("[DEBUG] process_activate: START, thread=%s, status=%d, pagedir=%p\n", 
+          t->name, (int)t->status, (void *)t->pagedir);
+
+  /* Activate thread's page tables.
+     NULL pagedir means kernel thread, skip activation. */
+  if (t->pagedir != NULL)
+    pagedir_activate (t->pagedir);
 
   /* Set thread's kernel stack for use in processing
      interrupts. */
   tss_update ();
+  
+  printf ("[DEBUG] process_activate: END\n");
 }
 
 /* We load ELF binaries.  The following definitions are taken
@@ -374,7 +440,7 @@ static bool load_segment (struct file *file, off_t ofs, uint8_t *upage,
 bool
 load (const char *file_name, void (**eip) (void), void **esp) 
 {
-  struct thread *t = thread_current ();
+  struct thread *t;
   struct Elf32_Ehdr ehdr;
   struct file *file = NULL;
   off_t file_ofs;
@@ -384,6 +450,13 @@ load (const char *file_name, void (**eip) (void), void **esp)
   char *program_name = NULL;
   char *save_ptr;
 
+  printf ("[DEBUG] load: START, file_name=%s\n", file_name);
+  
+  t = thread_current ();
+  
+  printf ("[DEBUG] load: thread=%s, status=%d\n", 
+          t->name, (int)t->status);
+
   /* TODO: parse file name
      Parse the command line to extract the program name.
      The file_name parameter contains the entire command line (e.g., "args-single onearg"),
@@ -392,25 +465,37 @@ load (const char *file_name, void (**eip) (void), void **esp)
   /* Make a copy of file_name for parsing */
   cmdline_copy = palloc_get_page (0);
   if (cmdline_copy == NULL)
-    goto done;
+    {
+      printf ("[DEBUG] load: Failed to allocate cmdline_copy\n");
+      goto done;
+    }
   strlcpy (cmdline_copy, file_name, PGSIZE);
   
   /* Extract the first token (program name) from the command line */
   program_name = strtok_r (cmdline_copy, " ", &save_ptr);
   if (program_name == NULL)
     {
+      printf ("[DEBUG] load: Failed to extract program name\n");
       palloc_free_page (cmdline_copy);
       goto done;
     }
 
+  printf ("[DEBUG] load: program_name=%s\n", program_name);
+
   /* Allocate and activate page directory. */
+  printf ("[DEBUG] load: Before pagedir_create()\n");
   t->pagedir = pagedir_create ();
   if (t->pagedir == NULL) 
     {
+      printf ("[DEBUG] load: Failed to create pagedir\n");
       palloc_free_page (cmdline_copy);
       goto done;
     }
+  printf ("[DEBUG] load: pagedir created=%p\n", (void *)t->pagedir);
+  
+  printf ("[DEBUG] load: Before process_activate()\n");
   process_activate ();
+  printf ("[DEBUG] load: After process_activate()\n");
 
   /* Open executable file using only the program name (not the entire command line). */
   file = filesys_open (program_name);

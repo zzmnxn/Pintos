@@ -157,6 +157,7 @@ void thread_block (void);
 void thread_unblock (struct thread *);
 
 struct thread *thread_current (void);
+struct thread *running_thread (void);  /* Returns current thread without assertion checks */
 tid_t thread_tid (void);
 const char *thread_name (void);
 

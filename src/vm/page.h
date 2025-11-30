@@ -40,7 +40,7 @@ struct vm_entry
   };
 
 void vm_init (struct hash *vm);
-void vm_destroy (struct hash *vm);
+void vm_destroy (struct hash *vm, uint32_t *pagedir);
 struct vm_entry *vm_find (struct hash *vm, void *vaddr);
 bool vm_insert (struct hash *vm, struct vm_entry *vme);
 bool vm_delete (struct hash *vm, struct vm_entry *vme);

@@ -73,7 +73,7 @@ bool thread_prior_aging;
 static void kernel_thread (thread_func *, void *aux);
 
 static void idle (void *aux UNUSED);
-static struct thread *running_thread (void);
+struct thread *running_thread (void);  /* Public - needed by process_activate */
 static struct thread *next_thread_to_run (void);
 static void init_thread (struct thread *, const char *name, int priority);
 static bool is_thread (struct thread *) UNUSED;
@@ -409,6 +409,21 @@ thread_current (void)
 {
   struct thread *t = running_thread ();
   
+  /* Debug: Print thread info before assertions */
+  printf ("[DEBUG] thread_current: t=%p\n", (void *)t);
+  if (t != NULL)
+    {
+      printf ("[DEBUG] thread_current: magic=0x%x (expected 0x%x), status=%d (expected %d=%s)\n",
+              t->magic, THREAD_MAGIC, (int)t->status, 
+              (int)THREAD_RUNNING, t->status == THREAD_RUNNING ? "RUNNING" : "NOT_RUNNING");
+      if (t->magic == THREAD_MAGIC)
+        printf ("[DEBUG] thread_current: thread name=%s\n", t->name);
+    }
+  else
+    {
+      printf ("[DEBUG] thread_current: t is NULL!\n");
+    }
+  
   /* Make sure T is really a thread.
      If either of these assertions fire, then your thread may
      have overflowed its stack.  Each thread has less than 4 kB
@@ -657,13 +672,18 @@ struct thread *
 running_thread (void) 
 {
   uint32_t *esp;
+  struct thread *t;
 
   /* Copy the CPU's stack pointer into `esp', and then round that
      down to the start of a page.  Because `struct thread' is
      always at the beginning of a page and the stack pointer is
      somewhere in the middle, this locates the curent thread. */
   asm ("mov %%esp, %0" : "=g" (esp));
-  return pg_round_down (esp);
+  t = pg_round_down (esp);
+  
+  printf ("[DEBUG] running_thread: esp=%p, t=%p\n", (void *)esp, (void *)t);
+  
+  return t;
 }
 
 /* Returns true if thread A has a higher priority than thread B. */
@@ -785,12 +805,17 @@ thread_schedule_tail (struct thread *prev)
   /* Mark us as running. */
   cur->status = THREAD_RUNNING;
 
+  printf ("[DEBUG] thread_schedule_tail: thread=%s, status=%d, pagedir=%p\n",
+          cur->name, (int)cur->status, (void *)cur->pagedir);
+
   /* Start new time slice. */
   thread_ticks = 0;
 
 #ifdef USERPROG
   /* Activate the new address space. */
+  printf ("[DEBUG] thread_schedule_tail: Before process_activate()\n");
   process_activate ();
+  printf ("[DEBUG] thread_schedule_tail: After process_activate()\n");
 #endif
 
   /* If the thread we switched from is dying, destroy its struct

@@ -1,5 +1,6 @@
 #include "vm/swap.h"
 #include <debug.h>
+#include <stddef.h>
 
 /* Initializes the swap disk. */
 void

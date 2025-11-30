@@ -143,6 +143,8 @@ page_fault (struct intr_frame *f)
   /* Turn interrupts back on (they were only off so that we could
      be assured of reading CR2 before it changed). */
   intr_enable ();
+  
+  printf ("[DEBUG] page_fault: START, fault_addr=%p\n", fault_addr);
 
   /* Count page faults. */
   page_fault_cnt++;
@@ -167,6 +169,7 @@ page_fault (struct intr_frame *f)
   /* Validate fault address. */
   if (!is_user_vaddr (fault_addr))
     {
+      printf ("[DEBUG] page_fault: Invalid address=%p\n", fault_addr);
       /* Invalid address - terminate the process */
       struct thread *cur = thread_current ();
       cur->exit_status = -1;
@@ -177,7 +180,12 @@ page_fault (struct intr_frame *f)
 
   /* Get the page-aligned virtual address. */
   void *page_addr = pg_round_down (fault_addr);
+  
+  printf ("[DEBUG] page_fault: START, fault_addr=%p, page_addr=%p\n", fault_addr, page_addr);
+  
   struct thread *cur = thread_current ();
+  
+  printf ("[DEBUG] page_fault: thread=%s, status=%d\n", cur->name, (int)cur->status);
 
   /* Find the vm_entry in the supplemental page table. */
   struct vm_entry *vme = vm_find (&cur->vm, page_addr);

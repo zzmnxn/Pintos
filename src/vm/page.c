@@ -1,12 +1,17 @@
 #include "vm/page.h"
 #include <debug.h>
+#include <stdio.h> 
 #include "lib/kernel/hash.h"
 #include "threads/vaddr.h"
 #include "threads/malloc.h"
+#include "threads/thread.h"
 #include "filesys/file.h"
 #include "userprog/syscall.h"
+#include "userprog/pagedir.h"
+#include "vm/frame.h"
 #include "threads/synch.h"
 #include <string.h>
+#include "lib/kernel/list.h"
 
 /* Hash function for vm_entry: hashes by virtual address (page-aligned). */
 static unsigned
@@ -25,12 +30,48 @@ vm_less_func (const struct hash_elem *a, const struct hash_elem *b, void *aux UN
   return vme_a->vaddr < vme_b->vaddr;
 }
 
-/* Destructor function for hash_destroy: frees vm_entry structure. */
+/* Destructor function for hash_clear: frees vm_entry structure and associated resources.
+   The aux parameter receives the pagedir (via h->aux) so we can avoid calling
+   thread_current() which has assertion checks that may fail during process exit. */
 static void
-vm_entry_destructor (struct hash_elem *e, void *aux UNUSED)
+vm_entry_destructor (struct hash_elem *e, void *aux)
 {
   struct vm_entry *vme = hash_entry (e, struct vm_entry, hash_elem);
+  uint32_t *pd = (uint32_t *) aux;  /* pagedir passed via h->aux from hash_clear */
+  void *kpage;
+
+  printf ("[DEBUG] vm_entry_destructor: vaddr=%p, is_loaded=%d, pd=%p\n", 
+          vme->vaddr, vme->is_loaded, (void *)pd);
+
+  /* If the page is loaded and pagedir is provided, we need to remove the frame entry. */
+  if (vme->is_loaded && pd != NULL)
+    {
+      /* Get the physical frame associated with this virtual address. */
+      kpage = pagedir_get_page (pd, vme->vaddr);
+      
+      printf ("[DEBUG] vm_entry_destructor: kpage=%p\n", kpage);
+
+      if (kpage != NULL)
+        {
+          printf ("[DEBUG] vm_entry_destructor: Calling remove_frame_entry\n");
+          
+          /* Remove frame from frame table without freeing physical memory.
+             This prevents double-free: the physical memory will be freed later
+             by pagedir_destroy(). We also avoid calling pagedir_clear_page()
+             to prevent TLB invalidation (which calls pagedir_activate) during
+             process exit, which could cause context switch and thread state issues. */
+          remove_frame_entry (kpage);
+          
+          printf ("[DEBUG] vm_entry_destructor: After remove_frame_entry\n");
+        }
+    }
+
+  printf ("[DEBUG] vm_entry_destructor: Freeing vm_entry\n");
+  
+  /* Free the vm_entry structure itself. */
   free (vme);
+  
+  printf ("[DEBUG] vm_entry_destructor: END\n");
 }
 
 /* Initializes the supplemental page table. */
@@ -42,9 +83,43 @@ vm_init (struct hash *vm)
 
 /* Destroys the supplemental page table. */
 void
-vm_destroy (struct hash *vm)
+vm_destroy (struct hash *vm, uint32_t *pagedir)
 {
-  hash_destroy (vm, vm_entry_destructor);
+  void *saved_aux;
+
+  printf ("[DEBUG] vm_destroy: START, pagedir = %p\n", (void *)pagedir);
+
+  if (vm == NULL)
+    {
+      printf ("[DEBUG] vm_destroy: vm is NULL, returning\n");
+      return;
+    }
+
+  printf ("[DEBUG] vm_destroy: hash has %zu elements\n", vm->elem_cnt);
+
+  /* Save the original aux value. */
+  saved_aux = vm->aux;
+
+  /* Temporarily set aux to pagedir so destructor can access it via h->aux. */
+  vm->aux = (void *) pagedir;
+
+  printf ("[DEBUG] vm_destroy: Before hash_clear\n");
+
+  /* Clear the hash table, passing each element to the destructor.
+     hash_clear will pass h->aux (which is now pagedir) to the destructor. */
+  hash_clear (vm, vm_entry_destructor);
+
+  printf ("[DEBUG] vm_destroy: After hash_clear\n");
+
+  /* Restore the original aux value. */
+  vm->aux = saved_aux;
+
+  /* Free the buckets (hash_clear only clears them, doesn't free). */
+  free (vm->buckets);
+  vm->bucket_cnt = 0;
+  vm->elem_cnt = 0;
+  
+  printf ("[DEBUG] vm_destroy: END\n");
 }
 
 /* Finds a vm_entry for the given virtual address. */

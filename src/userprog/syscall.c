@@ -5,6 +5,7 @@
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 #include "userprog/pagedir.h"
+#include "vm/page.h"  
 #include "devices/shutdown.h"
 #include "devices/input.h"
 #include "filesys/filesys.h"
@@ -45,15 +46,22 @@ syscall_init (void)
 static void
 syscall_handler (struct intr_frame *f) 
 {
+  printf ("[DEBUG] syscall_handler: START\n");
+  
   int syscall_number;
+  
+  printf ("[DEBUG] syscall_handler: Before is_valid_ptr\n");
   
   /* Get system call number from user stack with memory protection */
   if (!is_valid_ptr (f->esp, 4))
     {
+      printf ("[DEBUG] syscall_handler: Invalid esp pointer\n");
       syscall_exit (-1);
     }
   
   syscall_number = *(int *) f->esp;
+  
+  printf ("[DEBUG] syscall_handler: syscall_number=%d\n", syscall_number);
   
   /* Handle different system calls */
   switch (syscall_number)
@@ -241,7 +249,11 @@ syscall_handler (struct intr_frame *f)
 static bool
 check_user_address (const void *vaddr)
 {
-  struct thread *cur = thread_current ();
+  printf ("[DEBUG] check_user_address: vaddr=%p\n", vaddr);
+  
+  struct thread *cur = thread_current ();  // 여기서 Panic 발생 가능!
+  
+  printf ("[DEBUG] check_user_address: thread=%s\n", cur->name);
   
   /* Check for NULL pointer */
   if (vaddr == NULL)
@@ -251,10 +263,20 @@ check_user_address (const void *vaddr)
   if (!is_user_vaddr (vaddr))
     return false;
     
-  /* Check if the page is mapped */
-  if (pagedir_get_page (cur->pagedir, vaddr) == NULL)
-    return false;
-    
+  /* With Demand Paging, we need to check if the page exists in SPT,
+     not just if it's mapped. An unmapped but valid page should trigger
+     a page fault which will load it. */
+  
+  /* Get the page-aligned virtual address. */
+  void *page_addr = pg_round_down (vaddr);
+  
+  /* Check if vm_entry exists in SPT */
+  struct vm_entry *vme = vm_find (&cur->vm, page_addr);
+  
+  if (vme == NULL)
+    return false;  /* No vm_entry - invalid address */
+  
+  /* Page exists in SPT - it's valid (even if not loaded yet) */
   return true;
 }
 
