@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "lib/kernel/list.h"
+#include "threads/palloc.h"
 
 /* Forward declarations. */
 struct thread;
@@ -20,9 +21,8 @@ struct frame_entry
 
 /* Function declarations. */
 void frame_init (void);
-void *frame_alloc (struct vm_entry *vme);
-void frame_free (void *frame);
-struct frame_entry *frame_find (void *frame);
+void *allocate_frame (enum palloc_flags flags);
+void free_frame (void *kpage);
 
 #endif 
 
