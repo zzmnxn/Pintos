@@ -46,6 +46,8 @@ syscall_init (void)
 static void
 syscall_handler (struct intr_frame *f) 
 {
+  /* Save user stack pointer for stack growth handling during page faults. */
+  thread_current()->stack_ptr = f->esp;
   
   int syscall_number;
   

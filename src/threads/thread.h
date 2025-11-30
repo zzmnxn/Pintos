@@ -130,6 +130,7 @@ struct thread
     
     /* Virtual memory. */
     struct hash vm;                     /* Supplemental page table. */
+    void *stack_ptr;                    /* User stack pointer backup for syscalls. */
 #endif
 
     /* Owned by thread.c. */

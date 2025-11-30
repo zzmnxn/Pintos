@@ -5,12 +5,16 @@
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
+#include "threads/malloc.h"
 #include "userprog/process.h"
 #include "vm/page.h"
 #include "vm/frame.h"
 
 /* Number of page faults processed. */
 static long long page_fault_cnt;
+
+/* Maximum stack size: 8MB */
+#define STACK_MAX (1024 * 1024 * 8)
 
 static void kill (struct intr_frame *);
 static void page_fault (struct intr_frame *);
@@ -183,12 +187,67 @@ page_fault (struct intr_frame *f)
   
   if (vme == NULL)
     {
-      /* No vm_entry found - invalid access */
-      //printf ("PF: No vm_entry found - terminating\n");
-      cur->exit_status = -1;
-      cur->has_exited = true;
-      //printf ("%s: exit(-1)\n", cur->name);
-      thread_exit ();
+      /* No vm_entry found - check if this is a stack growth case */
+      void *user_esp;
+      void *stack_bottom = (uint8_t *) PHYS_BASE - STACK_MAX;
+      
+      /* Get user stack pointer: use f->esp if user mode, otherwise use saved stack_ptr */
+      if (user)
+        user_esp = f->esp;
+      else
+        user_esp = cur->stack_ptr;
+      
+      /* Check stack growth conditions:
+         1. fault_addr must be in user space (already validated above)
+         2. fault_addr must be below PHYS_BASE - 8MB (stack max size limit)
+         3. fault_addr must be within stack growth range: >= esp - 32 and < PHYS_BASE
+      */
+      if (is_user_vaddr (fault_addr) &&
+          fault_addr >= stack_bottom &&
+          user_esp != NULL &&
+          fault_addr >= (uint8_t *) user_esp - 32 &&
+          fault_addr < (uint8_t *) PHYS_BASE)
+        {
+          /* This is a valid stack growth - create VM_ANON entry */
+          vme = malloc (sizeof (struct vm_entry));
+          if (vme == NULL)
+            {
+              /* Failed to allocate vm_entry */
+              cur->exit_status = -1;
+              cur->has_exited = true;
+              thread_exit ();
+            }
+          
+          /* Initialize vm_entry for stack page */
+          vme->type = VM_ANON;
+          vme->vaddr = page_addr;
+          vme->writable = true;
+          vme->is_loaded = false;
+          vme->file = NULL;
+          vme->offset = 0;
+          vme->read_bytes = 0;
+          vme->zero_bytes = PGSIZE;
+          vme->swap_slot = 0;
+          
+          /* Insert into supplemental page table */
+          if (!vm_insert (&cur->vm, vme))
+            {
+              /* Failed to insert - entry might already exist, free and terminate */
+              free (vme);
+              cur->exit_status = -1;
+              cur->has_exited = true;
+              thread_exit ();
+            }
+          
+          /* Continue with normal page loading flow below */
+        }
+      else
+        {
+          /* No vm_entry found and not a valid stack growth - invalid access */
+          cur->exit_status = -1;
+          cur->has_exited = true;
+          thread_exit ();
+        }
     }
 
   /* Check if page is already loaded. */
