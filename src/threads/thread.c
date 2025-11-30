@@ -681,8 +681,6 @@ running_thread (void)
   asm ("mov %%esp, %0" : "=g" (esp));
   t = pg_round_down (esp);
   
-  printf ("[DEBUG] running_thread: esp=%p, t=%p\n", (void *)esp, (void *)t);
-  
   return t;
 }
 
