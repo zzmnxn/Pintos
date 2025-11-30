@@ -8,6 +8,7 @@
 #include "filesys/file.h"
 #include "userprog/pagedir.h"
 #include "vm/frame.h"
+#include "vm/swap.h"
 #include "threads/synch.h"
 #include <string.h>
 #include "lib/kernel/list.h"
@@ -184,8 +185,18 @@ vm_load_page (struct vm_entry *vme, void *kpage)
 
     case VM_ANON:
       {
-        /* Zero the entire page. */
-        memset (kpage, 0, PGSIZE);
+        /* Check if this page was swapped out. */
+        if (vme->swap_slot != 0)
+          {
+            /* Restore from swap disk. */
+            swap_in (vme->swap_slot, kpage);
+            vme->swap_slot = 0;  /* Clear swap slot after loading. */
+          }
+        else
+          {
+            /* Zero the entire page (new anonymous page). */
+            memset (kpage, 0, PGSIZE);
+          }
         break;
       }
 

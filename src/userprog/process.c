@@ -709,6 +709,8 @@ setup_stack (void **esp)
   if (success)
     {
       *esp = PHYS_BASE;
+      /* Set vm_entry in frame_entry for efficient lookup during eviction. */
+      set_frame_vme (kpage, vme);
     }
   else
     {

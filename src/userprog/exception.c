@@ -318,5 +318,8 @@ page_fault (struct intr_frame *f)
 
   /* Mark the page as loaded. */
   vme->is_loaded = true;
+  
+  /* Set vm_entry in frame_entry for efficient lookup during eviction. */
+  set_frame_vme (kpage, vme);
 }
 

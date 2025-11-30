@@ -24,6 +24,7 @@ void frame_init (void);
 void *allocate_frame (enum palloc_flags flags);
 void free_frame (void *kpage);
 void remove_frame_from_table (void *kpage);
+void set_frame_vme (void *kpage, struct vm_entry *vme);
 
 #endif 
 

@@ -30,6 +30,7 @@
 #include "userprog/tss.h"
 #ifdef VM
 #include "vm/frame.h"
+#include "vm/swap.h"
 #endif
 #else
 #include "tests/threads/tests.h"
@@ -103,6 +104,7 @@ main (void)
   paging_init ();
 #ifdef VM
   frame_init ();
+  swap_init ();
 #endif
 
   /* Segmentation. */
