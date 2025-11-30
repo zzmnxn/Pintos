@@ -104,7 +104,6 @@ main (void)
   paging_init ();
 #ifdef VM
   frame_init ();
-  swap_init ();
 #endif
 
   /* Segmentation. */
@@ -133,6 +132,11 @@ main (void)
   ide_init ();
   locate_block_devices ();
   filesys_init (format_filesys);
+#endif
+
+#ifdef VM
+  /* Initialize swap disk (must be after block device initialization). */
+  swap_init ();
 #endif
 
   printf ("Boot complete.\n");

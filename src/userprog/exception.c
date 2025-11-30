@@ -234,9 +234,9 @@ page_fault (struct intr_frame *f)
             {
               /* Failed to insert - entry might already exist, free and terminate */
               free (vme);
-              cur->exit_status = -1;
-              cur->has_exited = true;
-              thread_exit ();
+      cur->exit_status = -1;
+      cur->has_exited = true;
+      thread_exit ();
             }
           
           /* Continue with normal page loading flow below */

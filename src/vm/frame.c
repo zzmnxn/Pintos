@@ -17,6 +17,9 @@ static struct list frame_table;
 /* Lock for frame table synchronization. */
 static struct lock frame_lock;
 
+/* Clock hand for Clock Algorithm. */
+static struct list_elem *clock_hand = NULL;
+
 /* Initializes the frame table. */
 void
 frame_init (void)
@@ -98,7 +101,6 @@ find_vm_entry_for_frame (void *kpage)
 static void *
 evict_frame (void)
 {
-  static struct list_elem *clock_hand = NULL;
   struct frame_entry *fe;
   struct thread *owner;
   uint32_t *pd;
@@ -121,30 +123,24 @@ evict_frame (void)
         clock_hand = list_begin (&frame_table);
 
       fe = list_entry (clock_hand, struct frame_entry, list_elem);
-      owner = fe->owner;
-      pd = owner->pagedir;
-
-      /* Find vm_entry for this frame. */
-      lock_release (&frame_lock);
-      vme = find_vm_entry_for_frame (fe->frame);
-      lock_acquire (&frame_lock);
-
-      if (vme == NULL)
+      
+      /* Check if owner and vme are valid. */
+      if (fe->owner == NULL || fe->vme == NULL)
         {
-          /* No vm_entry found - skip this frame. */
           clock_hand = list_next (clock_hand);
           continue;
         }
-
+      
+      owner = fe->owner;
+      pd = owner->pagedir;
+      vme = fe->vme;  /* Use vme set by set_frame_vme */
       vaddr = vme->vaddr;
 
       /* Check accessed bit. */
       if (pagedir_is_accessed (pd, vaddr))
         {
           /* Give second chance: clear accessed bit and continue. */
-          lock_release (&frame_lock);
           pagedir_set_accessed (pd, vaddr, false);
-          lock_acquire (&frame_lock);
           clock_hand = list_next (clock_hand);
           continue;
         }
@@ -153,7 +149,7 @@ evict_frame (void)
       break;
     }
 
-  /* We have a victim frame. Save necessary information before releasing lock. */
+  /* We have a victim frame. */
   void *kpage = fe->frame;
   struct list_elem *victim_elem = clock_hand;
   
@@ -161,9 +157,6 @@ evict_frame (void)
   clock_hand = list_next (clock_hand);
   if (clock_hand == list_end (&frame_table))
     clock_hand = list_begin (&frame_table);
-
-  /* Release lock before swap operations and pagedir operations. */
-  lock_release (&frame_lock);
 
   /* Check dirty bit. */
   dirty = pagedir_is_dirty (pd, vaddr);
@@ -198,14 +191,15 @@ evict_frame (void)
   pagedir_clear_page (pd, vaddr);
 
   /* Remove from frame table and free frame_entry. */
-  lock_acquire (&frame_lock);
   list_remove (victim_elem);
-  lock_release (&frame_lock);
-
+  
   free (fe);
 
-  /* Free the physical page. */
-  palloc_free_page (kpage);
+  /* Release lock before returning. */
+  lock_release (&frame_lock);
+
+  /* Note: palloc_free_page(kpage) is NOT called here to avoid double free.
+     The physical page will be reused by the caller. */
 
   return kpage;
 }
@@ -226,6 +220,9 @@ allocate_frame (enum palloc_flags flags)
       kpage = evict_frame ();
       if (kpage == NULL)
         PANIC ("Eviction failed");
+      
+      if (flags & PAL_ZERO)
+        memset (kpage, 0, PGSIZE);
     }
 
   /* Allocate frame_entry structure. */
@@ -276,14 +273,25 @@ remove_frame_from_table (void *kpage)
         {
           /* Remove from frame table. */
           list_remove (e);
+          
+          /* If removed element is clock_hand, advance it to maintain validity. */
+          if (e == clock_hand)
+            {
+              clock_hand = list_next (e);
+              if (clock_hand == list_end (&frame_table))
+                clock_hand = list_begin (&frame_table);
+            }
+          
           break;
         }
+      fe = NULL;  /* Reset if not found in this iteration */
     }
 
   lock_release (&frame_lock);
 
+  /* If frame not found, it may have been evicted already - this is normal. */
   if (fe == NULL)
-    PANIC ("Attempted to remove non-existent frame");
+    return;
 
   /* Free the frame_entry structure only. Physical page is NOT freed here.
      This is critical - the physical memory will be freed by pagedir_destroy(). */
@@ -306,7 +314,6 @@ free_frame (void *kpage)
   struct list_elem *e;
   struct frame_entry *fe = NULL;
 
-
   if (kpage == NULL)
     {
       return;
@@ -323,8 +330,18 @@ free_frame (void *kpage)
         {
           /* Remove from frame table. */
           list_remove (e);
+          
+          /* If removed element is clock_hand, advance it to maintain validity. */
+          if (e == clock_hand)
+            {
+              clock_hand = list_next (e);
+              if (clock_hand == list_end (&frame_table))
+                clock_hand = list_begin (&frame_table);
+            }
+          
           break;
         }
+      fe = NULL;  /* Reset if not found in this iteration */
     }
 
   lock_release (&frame_lock);
