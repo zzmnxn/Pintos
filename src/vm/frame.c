@@ -68,13 +68,8 @@ remove_frame_from_table (void *kpage)
   struct list_elem *e;
   struct frame_entry *fe = NULL;
 
-  printf ("[DEBUG] remove_frame_from_table: kpage=%p\n", kpage);
-
   if (kpage == NULL)
-    {
-      printf ("[DEBUG] remove_frame_from_table: kpage is NULL, returning\n");
-      return;
-    }
+    return;
 
   lock_acquire (&frame_lock);
 
@@ -86,7 +81,6 @@ remove_frame_from_table (void *kpage)
       if (fe->frame == kpage)
         {
           /* Remove from frame table. */
-          printf ("[DEBUG] remove_frame_from_table: Found frame_entry, removing from table\n");
           list_remove (e);
           break;
         }
@@ -95,16 +89,11 @@ remove_frame_from_table (void *kpage)
   lock_release (&frame_lock);
 
   if (fe == NULL)
-    {
-      printf ("[DEBUG] remove_frame_from_table: Frame not found in table - PANIC\n");
-      PANIC ("Attempted to remove non-existent frame");
-    }
+    PANIC ("Attempted to remove non-existent frame");
 
   /* Free the frame_entry structure only. Physical page is NOT freed here.
      This is critical - the physical memory will be freed by pagedir_destroy(). */
-  printf ("[DEBUG] remove_frame_from_table: Freeing frame_entry struct only (NOT physical page)\n");
   free (fe);
-  printf ("[DEBUG] remove_frame_from_table: Done\n");
 }
 
 /* Frees a frame. */

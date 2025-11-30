@@ -348,9 +348,6 @@ process_activate (void)
 {
   struct thread *t = running_thread ();
 
-  printf ("[DEBUG] process_activate: START, thread=%s, status=%d, pagedir=%p\n", 
-          t->name, (int)t->status, (void *)t->pagedir);
-
   /* Activate thread's page tables.
      NULL pagedir means kernel thread, skip activation. */
   if (t->pagedir != NULL)
@@ -359,8 +356,6 @@ process_activate (void)
   /* Set thread's kernel stack for use in processing
      interrupts. */
   tss_update ();
-  
-  printf ("[DEBUG] process_activate: END\n");
 }
 
 /* We load ELF binaries.  The following definitions are taken
