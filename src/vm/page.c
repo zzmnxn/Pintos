@@ -162,12 +162,19 @@ vm_load_page (struct vm_entry *vme, void *kpage)
         if (vme->file == NULL)
           return false;
 
-        lock_acquire (&filesys_lock);
+        /* Avoid re-entering filesys_lock when we were faulting while holding it. */
+        bool need_release = false;
+        if (!lock_held_by_current_thread (&filesys_lock))
+          {
+            lock_acquire (&filesys_lock);
+            need_release = true;
+          }
         
         /* Read bytes from file. */
         off_t bytes_read = file_read_at (vme->file, kpage, vme->read_bytes, vme->offset);
         
-        lock_release (&filesys_lock);
+        if (need_release)
+          lock_release (&filesys_lock);
 
         if (bytes_read != (off_t) vme->read_bytes)
           return false;

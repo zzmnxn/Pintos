@@ -10,6 +10,7 @@
 #include "vm/swap.h"
 #include "userprog/pagedir.h"
 #include "threads/vaddr.h"
+#include <string.h>
 
 /* Global frame table. */
 static struct list frame_table;
@@ -117,7 +118,7 @@ evict_frame (void)
   if (list_empty (&frame_table))
     {
       lock_release (&frame_lock);
-      PANIC ("Cannot evict frame: frame table is empty");
+      return NULL;
     }
 
   /* Initialize clock_hand if needed. */
@@ -158,7 +159,7 @@ evict_frame (void)
           if (!found_valid_frame)
             {
               lock_release (&frame_lock);
-              PANIC ("Cannot evict frame: no valid frames available (all frames have NULL owner or vme)");
+              return NULL;
             }
           
           /* All valid frames have accessed bit set. Continue to give second chance. */
@@ -295,8 +296,8 @@ evict_frame (void)
   /* Mark page as not loaded (no lock needed for vme update). */
   victim_vme->is_loaded = false;
 
-  /* Note: palloc_free_page(kpage) is NOT called here to avoid double free.
-     The physical page will be reused by the caller. */
+  /* Clear page contents before reuse. */
+  memset (kpage, 0, PGSIZE);
 
   return kpage;
 }
@@ -316,7 +317,7 @@ allocate_frame (enum palloc_flags flags)
       /* Memory is full - evict a frame. */
       kpage = evict_frame ();
       if (kpage == NULL)
-        PANIC ("Eviction failed");
+        return NULL;
       
       if (flags & PAL_ZERO)
         memset (kpage, 0, PGSIZE);
@@ -445,7 +446,7 @@ free_frame (void *kpage)
 
   if (fe == NULL)
     {
-      PANIC ("Attempted to free non-existent frame");
+      return;
     }
 
   /* Free the frame_entry structure. */

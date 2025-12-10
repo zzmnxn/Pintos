@@ -259,21 +259,21 @@ check_user_address (const void *vaddr)
   if (!is_user_vaddr (vaddr))
     return false;
     
-  /* With Demand Paging, we need to check if the page exists in SPT,
-     not just if it's mapped. An unmapped but valid page should trigger
-     a page fault which will load it. */
-  
-  /* Get the page-aligned virtual address. */
+  /* If already known in SPT, accept. */
   void *page_addr = pg_round_down (vaddr);
-  
-  /* Check if vm_entry exists in SPT */
-  struct vm_entry *vme = vm_find (&cur->vm, page_addr);
-  
-  if (vme == NULL)
-    return false;  /* No vm_entry - invalid address */
-  
-  /* Page exists in SPT - it's valid (even if not loaded yet) */
-  return true;
+  if (vm_find (&cur->vm, page_addr) != NULL)
+    return true;
+
+  /* Otherwise, allow potential stack growth: address must be near the
+     current user stack pointer and below PHYS_BASE. */
+  void *esp = cur->stack_ptr;
+  if (esp != NULL &&
+      vaddr >= (uint8_t *) esp - 32 &&
+      vaddr < (void *) PHYS_BASE)
+    return true;
+
+  /* No vm_entry and not a plausible stack growth candidate. */
+  return false;
 }
 
 /* Check if a user string is valid (null-terminated) */

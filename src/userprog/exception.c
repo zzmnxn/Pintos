@@ -16,6 +16,17 @@ static long long page_fault_cnt;
 /* Maximum stack size: 8MB */
 #define STACK_MAX (1024 * 1024 * 8)
 
+/* Helper to terminate current user process on unrecoverable fault. */
+static void
+exit_process_on_fault (void)
+{
+  struct thread *cur = running_thread ();
+  cur->exit_status = -1;
+  cur->has_exited = true;
+  printf ("%s: exit(%d)\n", cur->name, cur->exit_status);
+  thread_exit ();
+}
+
 static void kill (struct intr_frame *);
 static void page_fault (struct intr_frame *);
 
@@ -79,16 +90,7 @@ exception_print_stats (void)
 static void
 kill (struct intr_frame *f) 
 {
-  /* This interrupt is one (probably) caused by a user process.
-     For example, the process might have tried to access unmapped
-     virtual memory (a page fault).  For now, we simply kill the
-     user process.  Later, we'll want to handle page faults in
-     the kernel.  Real Unix-like operating systems pass most
-     exceptions back to the process via signals, but we don't
-     implement them. */
-     
-  /* The interrupt frame's code segment value tells us where the
-     exception originated. */
+  
   switch (f->cs)
     {
     case SEL_UCSEG:
@@ -158,21 +160,15 @@ page_fault (struct intr_frame *f)
   write = (f->error_code & PF_W) != 0;
   user = (f->error_code & PF_U) != 0;
 
-  /* Only handle user mode page faults for demand paging. */
-  if (!user && !is_user_vaddr(fault_addr))
-    {
-      PANIC ("Kernel bug - unexpected page fault in kernel");
-    }
+  /* Kernel accesses to kernel addresses are kernel bugs. */
+  if (!user && !is_user_vaddr (fault_addr))
+    PANIC ("Kernel bug - unexpected page fault in kernel");
 
   /* Validate fault address. */
   if (!is_user_vaddr (fault_addr) || fault_addr == NULL)
     {
-      /* Invalid address - terminate the process */
-      struct thread *cur = running_thread ();
-      cur->exit_status = -1;
-      cur->has_exited = true;
-      //printf ("%s: exit(-1)\n", cur->name);
-      thread_exit ();
+      /* Invalid user address - terminate the process */
+      exit_process_on_fault ();
     }
 
   /* Get the page-aligned virtual address. */
@@ -244,9 +240,7 @@ page_fault (struct intr_frame *f)
       else
         {
           /* No vm_entry found and not a valid stack growth - invalid access */
-          cur->exit_status = -1;
-          cur->has_exited = true;
-          thread_exit ();
+          exit_process_on_fault ();
         }
     }
 
@@ -258,18 +252,10 @@ page_fault (struct intr_frame *f)
       if (!not_present && write && !vme->writable)
         {
           /* Writing to read-only page */
-          //printf ("PF: Write to read-only page - terminating\n");
-          cur->exit_status = -1;
-          cur->has_exited = true;
-          //printf ("%s: exit(-1)\n", cur->name);
-          thread_exit ();
+          exit_process_on_fault ();
         }
       /* Otherwise, this shouldn't happen - terminate */
-      //printf ("PF: Already loaded but faulted - terminating\n");
-      cur->exit_status = -1;
-      cur->has_exited = true;
-      printf ("%s: exit(-1)\n", cur->name);
-      thread_exit ();
+      exit_process_on_fault ();
     }
 
   /* Check write permission. */
@@ -288,10 +274,7 @@ page_fault (struct intr_frame *f)
   if (kpage == NULL)
     {
       /* Frame allocation failed */
-      cur->exit_status = -1;
-      cur->has_exited = true;
-      printf ("%s: exit(-1)\n", cur->name);
-      thread_exit ();
+      exit_process_on_fault ();
     }
   
   /* Load the page data. */
@@ -299,10 +282,7 @@ page_fault (struct intr_frame *f)
     {
       /* Failed to load page data - free the frame and terminate */
       free_frame (kpage);
-      cur->exit_status = -1;
-      cur->has_exited = true;
-      printf ("%s: exit(-1)\n", cur->name);
-      thread_exit ();
+      exit_process_on_fault ();
     }
 
   /* Map the page in the page table. */
@@ -310,10 +290,7 @@ page_fault (struct intr_frame *f)
     {
       /* Failed to install page - free the frame and terminate */
       free_frame (kpage);
-      cur->exit_status = -1;
-      cur->has_exited = true;
-      printf ("%s: exit(-1)\n", cur->name);
-      thread_exit ();
+      exit_process_on_fault ();
     }
 
   /* Mark the page as loaded. */
