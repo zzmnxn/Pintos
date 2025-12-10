@@ -4,6 +4,10 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <limits.h>
+
+/* "no swap slot assigned". */
+#define SWAP_SLOT_NONE SIZE_MAX
 
 /* Function declarations. */
 void swap_init (void);

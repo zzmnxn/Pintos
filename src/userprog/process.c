@@ -644,7 +644,7 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       vme->offset = current_offset;
       vme->read_bytes = page_read_bytes;
       vme->zero_bytes = page_zero_bytes;
-      vme->swap_slot = 0;
+      vme->swap_slot = SWAP_SLOT_NONE;
 
       /* Insert into supplemental page table. */
       if (!vm_insert (&t->vm, vme))
@@ -686,7 +686,7 @@ setup_stack (void **esp)
   vme->offset = 0;
   vme->read_bytes = 0;
   vme->zero_bytes = PGSIZE;
-  vme->swap_slot = 0;
+  vme->swap_slot = SWAP_SLOT_NONE;
 
   /* Insert into supplemental page table. */
   if (!vm_insert (&t->vm, vme))

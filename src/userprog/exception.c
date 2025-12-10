@@ -223,7 +223,7 @@ page_fault (struct intr_frame *f)
           vme->offset = 0;
           vme->read_bytes = 0;
           vme->zero_bytes = PGSIZE;
-          vme->swap_slot = 0;
+          vme->swap_slot = SWAP_SLOT_NONE;
           
           /* Insert into supplemental page table */
           if (!vm_insert (&cur->vm, vme))

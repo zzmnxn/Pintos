@@ -108,9 +108,13 @@ evict_frame (void)
   struct vm_entry *vme;
   void *vaddr;
   bool dirty;
-  size_t swap_slot;
+  size_t swap_slot = SWAP_SLOT_NONE;
   struct list_elem *start_hand;
   bool looped_once = false;
+  struct frame_entry *victim_fe = NULL;
+  struct vm_entry *victim_vme = NULL;
+  enum vm_type vme_type;
+  void *kpage;
 
   lock_acquire (&frame_lock);
 
@@ -241,60 +245,69 @@ evict_frame (void)
     }
 
   /* We have a victim frame. Save information needed for eviction. */
-  void *kpage = fe->frame;
-  struct list_elem *victim_elem = clock_hand;
-  
+  kpage = fe->frame;
+  victim_fe = fe;
+  victim_vme = vme;
+  vme_type = vme->type;
+
   /* Advance clock_hand before removing the victim. */
+  struct list_elem *victim_elem = clock_hand;
   clock_hand = list_next (clock_hand);
   if (clock_hand == list_end (&frame_table))
     clock_hand = list_begin (&frame_table);
 
-  /* Save vme information before releasing lock (vme might be modified later). */
-  struct vm_entry *victim_vme = vme;
-  enum vm_type vme_type = vme->type;
-
-  /* Check dirty bit. */
+  /* Check dirty bit and clear accessed entry while holding lock. */
   dirty = pagedir_is_dirty (pd, vaddr);
+
+  /* Mark as not loaded before releasing the lock to block re-entry faults. */
+  victim_vme->is_loaded = false;
 
   /* Clear page mapping first (while holding lock). */
   pagedir_clear_page (pd, vaddr);
 
-  /* Remove from frame table and free frame_entry (while holding lock). */
+  /* Remove from frame table. */
   list_remove (victim_elem);
-  
-  /* Free the frame_entry structure. */
-  free (fe);
 
-  /* Release lock before I/O operations to avoid blocking other threads. */
+  /* Release lock before any I/O operations to avoid blocking other threads. */
   lock_release (&frame_lock);
+
+  /* Free the frame_entry structure outside the lock. */
+  free (victim_fe);
 
   /* Now perform I/O operations without holding frame_lock. */
   /* Handle eviction based on page type. */
-  if (vme_type == VM_BIN && !dirty)
+  if (vme_type == VM_BIN)
     {
-      /* VM_BIN and not dirty: just discard (can reload from file). */
-      /* No swap needed. */
-      swap_slot = 0;  /* Not used */
+      if (dirty)
+        {
+          swap_slot = swap_out (kpage);
+          victim_vme->swap_slot = swap_slot;
+          victim_vme->type = VM_ANON;
+        }
+      else
+        {
+          victim_vme->swap_slot = SWAP_SLOT_NONE;
+        }
     }
-  else if (vme_type == VM_FILE && dirty)
+  else if (vme_type == VM_FILE)
     {
-      /* VM_FILE and dirty: structure for future write-back.
-         For now, treat as VM_ANON and swap out. */
+      if (dirty)
+        {
+          /* Treat dirty file-backed pages like anonymous for now. */
+          swap_slot = swap_out (kpage);
+          victim_vme->swap_slot = swap_slot;
+          victim_vme->type = VM_ANON;
+        }
+      else
+        {
+          victim_vme->swap_slot = SWAP_SLOT_NONE;
+        }
+    }
+  else if (vme_type == VM_ANON)
+    {
       swap_slot = swap_out (kpage);
       victim_vme->swap_slot = swap_slot;
-      victim_vme->type = VM_ANON;
     }
-  else if (vme_type == VM_ANON || (vme_type == VM_BIN && dirty))
-    {
-      /* VM_ANON or dirty VM_BIN: swap out. */
-      swap_slot = swap_out (kpage);
-      victim_vme->swap_slot = swap_slot;
-      if (vme_type == VM_BIN)
-        victim_vme->type = VM_ANON;
-    }
-
-  /* Mark page as not loaded (no lock needed for vme update). */
-  victim_vme->is_loaded = false;
 
   /* Clear page contents before reuse. */
   memset (kpage, 0, PGSIZE);

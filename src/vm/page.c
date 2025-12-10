@@ -187,11 +187,11 @@ vm_load_page (struct vm_entry *vme, void *kpage)
     case VM_ANON:
       {
         /* Check if this page was swapped out. */
-        if (vme->swap_slot != 0)
+        if (vme->swap_slot != SWAP_SLOT_NONE)
           {
             /* Restore from swap disk. */
             swap_in (vme->swap_slot, kpage);
-            vme->swap_slot = 0;  /* Clear swap slot after loading. */
+            vme->swap_slot = SWAP_SLOT_NONE;  /* Clear swap slot after loading. */
           }
         else
           {

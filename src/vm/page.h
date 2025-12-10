@@ -5,12 +5,12 @@
 #include <stdbool.h>
 #include "lib/kernel/hash.h"
 #include "filesys/off_t.h"
+#include "vm/swap.h"
 
-/* Forward declarations. */
 struct file;
 struct thread;
 
-/* Virtual memory page type. */
+
 enum vm_type
   {
     VM_BIN,   /* Binary file (executable). */

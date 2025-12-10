@@ -74,6 +74,8 @@ swap_in (size_t swap_slot, void *frame)
   block_sector_t sector;
   int i;
   
+  ASSERT (swap_slot != SWAP_SLOT_NONE);
+
   lock_acquire (&swap_lock);
   
   /* Calculate starting sector for this swap slot. */
@@ -96,6 +98,9 @@ swap_in (size_t swap_slot, void *frame)
 void
 swap_free (size_t swap_slot)
 {
+  if (swap_slot == SWAP_SLOT_NONE)
+    return;
+
   lock_acquire (&swap_lock);
   
   /* Free the swap slot in bitmap. */
