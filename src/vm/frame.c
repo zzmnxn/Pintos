@@ -108,24 +108,68 @@ evict_frame (void)
   void *vaddr;
   bool dirty;
   size_t swap_slot;
+  struct list_elem *start_hand;
+  bool looped_once = false;
 
   lock_acquire (&frame_lock);
+
+  /* Check if frame_table is empty. */
+  if (list_empty (&frame_table))
+    {
+      lock_release (&frame_lock);
+      PANIC ("Cannot evict frame: frame table is empty");
+    }
 
   /* Initialize clock_hand if needed. */
   if (clock_hand == NULL || clock_hand == list_end (&frame_table))
     clock_hand = list_begin (&frame_table);
+
+  /* Remember starting point to detect infinite loop. */
+  start_hand = clock_hand;
 
   /* Clock Algorithm: find a victim frame. */
   while (true)
     {
       /* If we've gone through all frames, restart. */
       if (clock_hand == list_end (&frame_table))
-        clock_hand = list_begin (&frame_table);
+        {
+          clock_hand = list_begin (&frame_table);
+          looped_once = true;
+        }
+
+      /* If we've looped once and returned to start, check for infinite loop. */
+      if (looped_once && clock_hand == start_hand)
+        {
+          /* Check if there are any valid frames at all. */
+          struct list_elem *e;
+          bool found_valid_frame = false;
+          
+          for (e = list_begin (&frame_table); e != list_end (&frame_table);
+               e = list_next (e))
+            {
+              fe = list_entry (e, struct frame_entry, list_elem);
+              if (fe->owner != NULL && fe->vme != NULL)
+                {
+                  found_valid_frame = true;
+                  break;
+                }
+            }
+          
+          if (!found_valid_frame)
+            {
+              lock_release (&frame_lock);
+              PANIC ("Cannot evict frame: no valid frames available (all frames have NULL owner or vme)");
+            }
+          
+          /* All valid frames have accessed bit set. Continue to give second chance. */
+          looped_once = false;
+          start_hand = clock_hand;
+        }
 
       fe = list_entry (clock_hand, struct frame_entry, list_elem);
       
-      /* Check if owner and vme are valid. */
-      if (fe->owner == NULL || fe->vme == NULL)
+      /* Check if owner is valid. */
+      if (fe->owner == NULL)
         {
           clock_hand = list_next (clock_hand);
           continue;
@@ -133,7 +177,53 @@ evict_frame (void)
       
       owner = fe->owner;
       pd = owner->pagedir;
-      vme = fe->vme;  /* Use vme set by set_frame_vme */
+      if (pd == NULL)
+        {
+          clock_hand = list_next (clock_hand);
+          continue;
+        }
+
+      /* If vme is not set, try to find it from owner's SPT. */
+      if (fe->vme == NULL)
+        {
+          struct hash_iterator i;
+          struct vm_entry *found_vme = NULL;
+          
+          /* Search through owner's SPT to find the vm_entry that maps to this kpage. */
+          hash_first (&i, &owner->vm);
+          while (hash_next (&i))
+            {
+              struct vm_entry *candidate_vme = hash_entry (hash_cur (&i), struct vm_entry, hash_elem);
+              
+              if (candidate_vme->is_loaded)
+                {
+                  void *mapped_kpage = pagedir_get_page (pd, candidate_vme->vaddr);
+                  if (mapped_kpage == fe->frame)
+                    {
+                      found_vme = candidate_vme;
+                      break;
+                    }
+                }
+            }
+          
+          if (found_vme != NULL)
+            {
+              /* Found it! Update frame_entry for future use. */
+              fe->vme = found_vme;
+              vme = found_vme;
+            }
+          else
+            {
+              /* Could not find vme - skip this frame. */
+              clock_hand = list_next (clock_hand);
+              continue;
+            }
+        }
+      else
+        {
+          vme = fe->vme;
+        }
+      
       vaddr = vme->vaddr;
 
       /* Check accessed bit. */
@@ -149,7 +239,7 @@ evict_frame (void)
       break;
     }
 
-  /* We have a victim frame. */
+  /* We have a victim frame. Save information needed for eviction. */
   void *kpage = fe->frame;
   struct list_elem *victim_elem = clock_hand;
   
@@ -158,45 +248,52 @@ evict_frame (void)
   if (clock_hand == list_end (&frame_table))
     clock_hand = list_begin (&frame_table);
 
+  /* Save vme information before releasing lock (vme might be modified later). */
+  struct vm_entry *victim_vme = vme;
+  enum vm_type vme_type = vme->type;
+
   /* Check dirty bit. */
   dirty = pagedir_is_dirty (pd, vaddr);
 
+  /* Clear page mapping first (while holding lock). */
+  pagedir_clear_page (pd, vaddr);
+
+  /* Remove from frame table and free frame_entry (while holding lock). */
+  list_remove (victim_elem);
+  
+  /* Free the frame_entry structure. */
+  free (fe);
+
+  /* Release lock before I/O operations to avoid blocking other threads. */
+  lock_release (&frame_lock);
+
+  /* Now perform I/O operations without holding frame_lock. */
   /* Handle eviction based on page type. */
-  if (vme->type == VM_BIN && !dirty)
+  if (vme_type == VM_BIN && !dirty)
     {
       /* VM_BIN and not dirty: just discard (can reload from file). */
       /* No swap needed. */
+      swap_slot = 0;  /* Not used */
     }
-  else if (vme->type == VM_FILE && dirty)
+  else if (vme_type == VM_FILE && dirty)
     {
       /* VM_FILE and dirty: structure for future write-back.
          For now, treat as VM_ANON and swap out. */
       swap_slot = swap_out (kpage);
-      vme->swap_slot = swap_slot;
-      vme->type = VM_ANON;
+      victim_vme->swap_slot = swap_slot;
+      victim_vme->type = VM_ANON;
     }
-  else if (vme->type == VM_ANON || (vme->type == VM_BIN && dirty))
+  else if (vme_type == VM_ANON || (vme_type == VM_BIN && dirty))
     {
       /* VM_ANON or dirty VM_BIN: swap out. */
       swap_slot = swap_out (kpage);
-      vme->swap_slot = swap_slot;
-      if (vme->type == VM_BIN)
-        vme->type = VM_ANON;
+      victim_vme->swap_slot = swap_slot;
+      if (vme_type == VM_BIN)
+        victim_vme->type = VM_ANON;
     }
 
-  /* Mark page as not loaded. */
-  vme->is_loaded = false;
-
-  /* Clear page mapping. */
-  pagedir_clear_page (pd, vaddr);
-
-  /* Remove from frame table and free frame_entry. */
-  list_remove (victim_elem);
-  
-  free (fe);
-
-  /* Release lock before returning. */
-  lock_release (&frame_lock);
+  /* Mark page as not loaded (no lock needed for vme update). */
+  victim_vme->is_loaded = false;
 
   /* Note: palloc_free_page(kpage) is NOT called here to avoid double free.
      The physical page will be reused by the caller. */

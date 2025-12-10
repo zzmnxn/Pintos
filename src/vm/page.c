@@ -33,9 +33,7 @@ vm_less_func (const struct hash_elem *a, const struct hash_elem *b, void *aux UN
   return vme_a->vaddr < vme_b->vaddr;
 }
 
-/* Destructor function for hash_clear: frees vm_entry structure and associated resources.
-   The aux parameter receives the pagedir (via h->aux) so we can avoid calling
-   thread_current() which has assertion checks that may fail during process exit. */
+
 static void
 vm_entry_destructor (struct hash_elem *e, void *aux)
 {
@@ -51,11 +49,7 @@ vm_entry_destructor (struct hash_elem *e, void *aux)
 
       if (kpage != NULL)
         {
-          /* Remove frame from frame table without freeing physical memory.
-             This prevents double-free: the physical memory will be freed later
-             by pagedir_destroy(). We also avoid calling pagedir_clear_page()
-             to prevent TLB invalidation (which calls pagedir_activate) during
-             process exit, which could cause context switch and thread state issues. */
+       
           remove_frame_from_table (kpage);
         }
     }
