@@ -7,6 +7,7 @@
 #include "threads/vaddr.h"
 #include "threads/malloc.h"
 #include "userprog/pagedir.h"
+#include "userprog/process.h"
 #include "vm/page.h"
 #include "vm/frame.h"
 #include "devices/shutdown.h"
@@ -43,6 +44,8 @@ static bool check_user_address (const void *vaddr);
 static bool check_user_string (const char *str);
 static mapid_t syscall_mmap (int fd, void *addr);
 static void syscall_munmap (mapid_t mapid);
+static void pin_buffer (void *buffer, unsigned size);
+static void unpin_buffer (void *buffer, unsigned size);
 
 void
 syscall_init (void) 
@@ -465,6 +468,78 @@ syscall_remove (const char *file)
   return success;
 }
 
+/* Pin buffer pages to prevent eviction during I/O operations */
+static void
+pin_buffer (void *buffer, unsigned size)
+{
+  struct thread *cur = thread_current ();
+  void *start = pg_round_down (buffer);
+  void *end = pg_round_down ((uint8_t *) buffer + size);
+  
+  for (void *page = start; page <= end; page = (uint8_t *) page + PGSIZE)
+    {
+      struct vm_entry *vme = vm_find (&cur->vm, page);
+      
+      if (vme != NULL)
+        {
+          /* If page is not loaded, load it first */
+          if (!vme->is_loaded)
+            {
+              void *kpage = allocate_frame (PAL_USER);
+              if (kpage != NULL)
+                {
+                  if (vm_load_page (vme, kpage))
+                    {
+                      if (install_page (page, kpage, vme->writable))
+                        {
+                          vme->is_loaded = true;
+                          
+                          /* For VM_FILE pages, initialize dirty bit to false */
+                          if (vme->type == VM_FILE)
+                            {
+                              pagedir_set_dirty (cur->pagedir, page, false);
+                            }
+                          
+                          set_frame_vme (kpage, vme);
+                        }
+                      else
+                        {
+                          free_frame (kpage);
+                        }
+                    }
+                  else
+                    {
+                      free_frame (kpage);
+                    }
+                }
+            }
+          
+          /* Pin the page */
+          vme->pinned = true;
+        }
+    }
+}
+
+/* Unpin buffer pages after I/O operations */
+static void
+unpin_buffer (void *buffer, unsigned size)
+{
+  struct thread *cur = thread_current ();
+  void *start = pg_round_down (buffer);
+  void *end = pg_round_down ((uint8_t *) buffer + size);
+  
+  for (void *page = start; page <= end; page = (uint8_t *) page + PGSIZE)
+    {
+      struct vm_entry *vme = vm_find (&cur->vm, page);
+      
+      if (vme != NULL)
+        {
+          /* Unpin the page */
+          vme->pinned = false;
+        }
+    }
+}
+
 /* Open a file */
 static int
 syscall_open (const char *file)
@@ -568,6 +643,9 @@ syscall_read (int fd, void *buffer, unsigned size)
       if (file == NULL)
         return -1;
       
+      /* Pin buffer pages to prevent eviction during I/O */
+      pin_buffer (buffer, size);
+      
       /* Acquire file system lock */
       lock_acquire (&filesys_lock);
       
@@ -576,6 +654,9 @@ syscall_read (int fd, void *buffer, unsigned size)
       
       /* Release file system lock */
       lock_release (&filesys_lock);
+      
+      /* Unpin buffer pages after I/O */
+      unpin_buffer (buffer, size);
       
       return (int) bytes_read;
     }
@@ -612,6 +693,9 @@ syscall_write (int fd, const void *buffer, unsigned size)
       if (file == NULL)
         return -1;
       
+      /* Pin buffer pages to prevent eviction during I/O */
+      pin_buffer ((void *) buffer, size);
+      
       /* Acquire file system lock */
       lock_acquire (&filesys_lock);
       
@@ -620,6 +704,9 @@ syscall_write (int fd, const void *buffer, unsigned size)
       
       /* Release file system lock */
       lock_release (&filesys_lock);
+      
+      /* Unpin buffer pages after I/O */
+      unpin_buffer ((void *) buffer, size);
       
       return (int) bytes_written;
     }
@@ -974,8 +1061,9 @@ syscall_munmap (mapid_t mapid)
               /* Clear page mapping */
               pagedir_clear_page (cur->pagedir, vme->vaddr);
               
-              /* Free frame (removes from table and frees physical memory) */
-              free_frame (kpage);
+              /* Remove frame from table and free physical memory */
+              remove_frame_from_table (kpage);
+              palloc_free_page (kpage);
             }
         }
       

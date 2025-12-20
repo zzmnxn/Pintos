@@ -233,6 +233,13 @@ evict_frame (void)
       
       vaddr = vme->vaddr;
 
+      /* Skip pinned pages - they should never be evicted. */
+      if (vme->pinned)
+        {
+          clock_hand = list_next (clock_hand);
+          continue;
+        }
+
       /* Check accessed bit. */
       if (pagedir_is_accessed (pd, vaddr))
         {
@@ -283,18 +290,24 @@ evict_frame (void)
         }
       victim_vme->swap_slot = SWAP_SLOT_NONE;
     }
-  else if (vme_type == VM_ANON)
+  else
     {
-      /* Anon 페이지(스택 등)인 경우: 무조건 스왑 아웃 */
-      swap_slot = swap_out (kpage);
-      victim_vme->swap_slot = swap_slot;
-    }
-  else if (vme_type == VM_BIN)
-    {
-      /* 실행 파일 코드/데이터: Dirty일 수 없음(수정 불가). 그냥 버림.
-         만약 dirty하다면(코드 수정 등) VM_ANON으로 변환하여 스왑해야 하지만, 
-         Pintos 기본 과제에선 VM_BIN은 Read-only로 가정해도 됨 */
-      victim_vme->swap_slot = SWAP_SLOT_NONE;
+      /* VM_ANON 또는 VM_BIN: Dirty하거나 VM_ANON이면 Swap Out */
+      if (dirty || vme_type == VM_ANON)
+        {
+          /* Swap out the page */
+          swap_slot = swap_out (kpage);
+          victim_vme->swap_slot = swap_slot;
+          
+          /* VM_BIN이 스왑으로 나가면 타입을 VM_ANON으로 변경 */
+          if (vme_type == VM_BIN)
+            victim_vme->type = VM_ANON;
+        }
+      else
+        {
+          /* Dirty가 아니고 VM_BIN인 경우: 그냥 해제 (재로딩 가능) */
+          victim_vme->swap_slot = SWAP_SLOT_NONE;
+        }
     }
 
   /* 2. is_loaded false 설정 및 메모리 해제 */
