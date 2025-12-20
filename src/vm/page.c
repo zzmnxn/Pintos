@@ -189,9 +189,7 @@ vm_load_page (struct vm_entry *vme, void *kpage)
         if (vme->type == VM_FILE)
           {
             vme->is_loaded = true;
-            /* 파일 시스템에서 읽어온 직후에는 메모리와 디스크가 동일하므로 
-               dirty를 false로 명시적으로 초기화 (하드웨어가 읽기 과정에서 
-               dirty를 1로 세팅할 수 있으므로 강제로 초기화 필요) */
+            /* Dirty 비트를 false로 명시적으로 초기화 */
             if (cur->pagedir != NULL)
               pagedir_set_dirty (cur->pagedir, vme->vaddr, false);
           }
