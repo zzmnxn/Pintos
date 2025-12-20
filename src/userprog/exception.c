@@ -182,7 +182,18 @@ page_fault (struct intr_frame *f)
   /* Find the vm_entry in the supplemental page table. */
   struct vm_entry *vme = vm_find (&cur->vm, page_addr);
   
+  /* CRITICAL: Check not_present flag FIRST - Protection Violation handling */
+  /* not_present == false means page is present but access was denied (Protection Violation) */
+  /* This must be checked before pinned check to avoid infinite yield loops */
+  if (!not_present)
+    {
+      /* Protection Violation - page exists but access rights are violated */
+      /* Exit immediately regardless of pinned state to prevent infinite loops */
+      exit_process_on_fault ();
+    }
+  
   /* Check if page is pinned (being evicted). */
+  /* Only meaningful for actual Not Present situations */
   if (vme != NULL && vme->pinned)
     {
       /* Page is currently being evicted - yield to let eviction complete */

@@ -847,6 +847,11 @@ syscall_mmap (int fd, void *addr)
   if (addr == NULL || addr == 0 || pg_ofs (addr) != 0)
     return MAP_FAILED;
   
+  /* Check if mmap address overlaps with stack region (8MB below PHYS_BASE) */
+  void *stack_bottom = (uint8_t *) PHYS_BASE - (1024 * 1024 * 8);
+  if (addr >= stack_bottom)
+    return MAP_FAILED;
+  
   /* Validate fd: must be >= 2 (not stdin/stdout) */
   if (fd < 2)
     return MAP_FAILED;
