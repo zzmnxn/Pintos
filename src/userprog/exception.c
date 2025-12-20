@@ -7,6 +7,7 @@
 #include "threads/vaddr.h"
 #include "threads/malloc.h"
 #include "userprog/process.h"
+#include "userprog/pagedir.h"
 #include "vm/page.h"
 #include "vm/frame.h"
 
@@ -303,6 +304,13 @@ page_fault (struct intr_frame *f)
 
   /* Mark the page as loaded. */
   vme->is_loaded = true;
+  
+  /* For VM_FILE pages, initialize dirty bit to false after loading. */
+  if (vme->type == VM_FILE)
+    {
+      struct thread *cur = thread_current ();
+      pagedir_set_dirty (cur->pagedir, page_addr, false);
+    }
   
   /* Set vm_entry in frame_entry for efficient lookup during eviction. */
   set_frame_vme (kpage, vme);

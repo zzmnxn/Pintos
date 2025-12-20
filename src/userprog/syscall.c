@@ -7,7 +7,8 @@
 #include "threads/vaddr.h"
 #include "threads/malloc.h"
 #include "userprog/pagedir.h"
-#include "vm/page.h"  
+#include "vm/page.h"
+#include "vm/frame.h"
 #include "devices/shutdown.h"
 #include "devices/input.h"
 #include "filesys/filesys.h"
@@ -48,6 +49,13 @@ syscall_init (void)
 {
   intr_register_int (0x30, 3, INTR_ON, syscall_handler, "syscall");
   lock_init (&filesys_lock);
+}
+
+/* Returns true if the current thread holds filesys_lock, false otherwise. */
+bool
+filesys_lock_held_by_current_thread (void)
+{
+  return lock_held_by_current_thread (&filesys_lock);
 }
 
 static void
@@ -957,13 +965,16 @@ syscall_munmap (mapid_t mapid)
                   lock_acquire (&filesys_lock);
                   file_write_at (vme->file, kpage, vme->read_bytes, vme->offset);
                   lock_release (&filesys_lock);
+                  
+                  /* Reset dirty bit after write-back */
+                  pagedir_set_dirty (cur->pagedir, vme->vaddr, false);
                 }
               
               /* Clear page mapping */
               pagedir_clear_page (cur->pagedir, vme->vaddr);
               
-              /* Remove frame */
-              remove_frame_from_table (kpage);
+              /* Free frame (removes from table and frees physical memory) */
+              free_frame (kpage);
             }
         }
       

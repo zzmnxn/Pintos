@@ -12,9 +12,7 @@
 #include "threads/synch.h"
 #include <string.h>
 #include "lib/kernel/list.h"
-
-/* External filesystem lock from syscall.c */
-extern struct lock filesys_lock;
+#include "userprog/syscall.h"
 
 /* Hash function for vm_entry: hashes by virtual address (page-aligned). */
 static unsigned
@@ -163,24 +161,29 @@ vm_load_page (struct vm_entry *vme, void *kpage)
           return false;
 
         /* Avoid re-entering filesys_lock when we were faulting while holding it. */
-        bool need_release = false;
-        if (!lock_held_by_current_thread (&filesys_lock))
-          {
-            lock_acquire (&filesys_lock);
-            need_release = true;
-          }
+        bool lock_held = filesys_lock_held_by_current_thread ();
+        if (!lock_held)
+          lock_acquire (&filesys_lock);
         
         /* Read bytes from file. */
-        off_t bytes_read = file_read_at (vme->file, kpage, vme->read_bytes, vme->offset);
+        off_t bytes_read = 0;
+        if (vme->read_bytes > 0)
+          {
+            bytes_read = file_read_at (vme->file, kpage, vme->read_bytes, vme->offset);
+            if (bytes_read != (off_t) vme->read_bytes)
+              {
+                if (!lock_held)
+                  lock_release (&filesys_lock);
+                return false;
+              }
+          }
         
-        if (need_release)
+        if (!lock_held)
           lock_release (&filesys_lock);
 
-        if (bytes_read != (off_t) vme->read_bytes)
-          return false;
-
-        /* Zero the remaining bytes. */
-        memset (kpage + vme->read_bytes, 0, vme->zero_bytes);
+        /* Zero the remaining bytes (padding). */
+        if (vme->zero_bytes > 0)
+          memset (kpage + vme->read_bytes, 0, vme->zero_bytes);
         break;
       }
 

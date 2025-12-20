@@ -320,13 +320,16 @@ process_exit (void)
                           lock_acquire (&filesys_lock);
                           file_write_at (vme->file, kpage, vme->read_bytes, vme->offset);
                           lock_release (&filesys_lock);
+                          
+                          /* Reset dirty bit after write-back */
+                          pagedir_set_dirty (pd, vme->vaddr, false);
                         }
                       
                       /* Clear page mapping */
                       pagedir_clear_page (pd, vme->vaddr);
                       
-                      /* Remove frame */
-                      remove_frame_from_table (kpage);
+                      /* Free frame (removes from table and frees physical memory) */
+                      free_frame (kpage);
                     }
                 }
             }

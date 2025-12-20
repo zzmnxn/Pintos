@@ -11,6 +11,10 @@
 #include "userprog/pagedir.h"
 #include "threads/vaddr.h"
 #include <string.h>
+#include "filesys/file.h"
+
+/* External filesystem lock from syscall.c */
+extern struct lock filesys_lock;
 
 /* Global frame table. */
 static struct list frame_table;
@@ -294,20 +298,23 @@ evict_frame (void)
     }
   else if (vme_type == VM_FILE)
     {
-      if (dirty)
+      /* VM_FILE type pages (mmap files): write back to original file if dirty.
+         NEVER use swap disk - they are backed by files and can be reloaded on demand. */
+      if (dirty && victim_vme->file != NULL)
         {
-          /* Treat dirty file-backed pages like anonymous for now. */
-          swap_slot = swap_out (kpage);
-          victim_vme->swap_slot = swap_slot;
-          victim_vme->type = VM_ANON;
+          /* Write back dirty page to the original file. */
+          lock_acquire (&filesys_lock);
+          file_write_at (victim_vme->file, kpage, victim_vme->read_bytes, victim_vme->offset);
+          lock_release (&filesys_lock);
         }
-      else
-        {
-          victim_vme->swap_slot = SWAP_SLOT_NONE;
-        }
+      /* Clean pages can be simply discarded - they will be reloaded from file on demand. */
+      victim_vme->swap_slot = SWAP_SLOT_NONE;
+      /* Keep type as VM_FILE - do not change to VM_ANON. */
+      /* Note: is_loaded is already set to false above (line 267). */
     }
   else if (vme_type == VM_ANON)
     {
+      /* VM_ANON type pages: always swap out to swap disk. */
       swap_slot = swap_out (kpage);
       victim_vme->swap_slot = swap_slot;
     }
