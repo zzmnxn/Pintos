@@ -25,6 +25,7 @@ struct vm_entry
     void *vaddr;                  /* Virtual address. */
     bool writable;                /* Whether page is writable. */
     bool is_loaded;               /* Whether page is currently loaded in memory. */
+    bool pinned;                  /* Whether page is pinned (being evicted). */
     
     /* File-related fields (for VM_BIN and VM_FILE). */
     struct file *file;            /* Pointer to file. */

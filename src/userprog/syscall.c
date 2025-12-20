@@ -1,9 +1,11 @@
 #include "userprog/syscall.h"
 #include <stdio.h>
 #include <syscall-nr.h>
+#include <round.h>
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
+#include "threads/malloc.h"
 #include "userprog/pagedir.h"
 #include "vm/page.h"  
 #include "devices/shutdown.h"
@@ -11,9 +13,12 @@
 #include "filesys/filesys.h"
 #include "filesys/file.h"
 #include "threads/synch.h"
+#include "lib/kernel/list.h"
 
 /* Type definitions for system calls */
 typedef int pid_t;
+typedef int mapid_t;
+#define MAP_FAILED ((mapid_t) -1)
 
 /* Global file system lock for synchronization */
 struct lock filesys_lock;
@@ -35,6 +40,8 @@ static void syscall_close (int fd);
 static bool is_valid_ptr (const void *ptr, unsigned size);
 static bool check_user_address (const void *vaddr);
 static bool check_user_string (const char *str);
+static mapid_t syscall_mmap (int fd, void *addr);
+static void syscall_munmap (mapid_t mapid);
 
 void
 syscall_init (void) 
@@ -213,6 +220,30 @@ syscall_handler (struct intr_frame *f)
           syscall_exit (-1);
         }
       syscall_close (*(int *) (f->esp + 4));
+      break;
+      
+    case SYS_MMAP:
+      if (!is_valid_ptr (f->esp + 4, 8))
+        {
+          syscall_exit (-1);
+        }
+      {
+        int fd = *(int *) (f->esp + 4);
+        void *addr = *(void **) (f->esp + 8);
+        if (!check_user_address (addr))
+          {
+            syscall_exit (-1);
+          }
+        f->eax = syscall_mmap (fd, addr);
+      }
+      break;
+      
+    case SYS_MUNMAP:
+      if (!is_valid_ptr (f->esp + 4, 4))
+        {
+          syscall_exit (-1);
+        }
+      syscall_munmap (*(mapid_t *) (f->esp + 4));
       break;
       
     case SYS_FIBONACCI:
@@ -698,4 +729,257 @@ syscall_max_of_four_int (int a, int b, int c, int d)
     max = d;
   
   return max;
+}
+
+/* Map a file into memory */
+static mapid_t
+syscall_mmap (int fd, void *addr)
+{
+  struct thread *cur = thread_current ();
+  struct file *file;
+  struct file *mapped_file;
+  off_t file_size;
+  void *vaddr;
+  off_t offset;
+  uint32_t read_bytes, zero_bytes;
+  struct vm_entry *vme;
+  struct hash_iterator i;
+  void *end_addr;
+  
+  /* Validate addr: must be page-aligned, not NULL, not 0 */
+  if (addr == NULL || addr == 0 || pg_ofs (addr) != 0)
+    return MAP_FAILED;
+  
+  /* Validate fd: must be >= 2 (not stdin/stdout) */
+  if (fd < 2)
+    return MAP_FAILED;
+  
+  /* Get file from file descriptor */
+  file = get_file_from_fd (fd);
+  if (file == NULL)
+    return MAP_FAILED;
+  
+  /* Acquire file system lock */
+  lock_acquire (&filesys_lock);
+  
+  /* Get file size */
+  file_size = file_length (file);
+  
+  /* Check file size > 0 */
+  if (file_size == 0)
+    {
+      lock_release (&filesys_lock);
+      return MAP_FAILED;
+    }
+  
+  /* Calculate end address of mapping */
+  end_addr = (uint8_t *) addr + file_size;
+  
+  /* Check for overlapping mappings by iterating through existing vm_entries */
+  hash_first (&i, &cur->vm);
+  while (hash_next (&i))
+    {
+      struct vm_entry *existing_vme = hash_entry (hash_cur (&i), struct vm_entry, hash_elem);
+      void *existing_end = (uint8_t *) existing_vme->vaddr + PGSIZE;
+      
+      /* Check if new mapping overlaps with existing mapping */
+      if (addr < existing_end && existing_vme->vaddr < end_addr)
+        {
+          lock_release (&filesys_lock);
+          return MAP_FAILED;
+        }
+    }
+  
+  /* Use file_reopen to get separate file reference for the mapping */
+  mapped_file = file_reopen (file);
+  if (mapped_file == NULL)
+    {
+      lock_release (&filesys_lock);
+      return MAP_FAILED;
+    }
+  
+  /* Release lock before creating vm_entries (may take time) */
+  lock_release (&filesys_lock);
+  
+  /* Create vm_entry for each page */
+  vaddr = addr;
+  offset = 0;
+  
+  while (offset < file_size)
+    {
+      /* Calculate bytes for this page */
+      read_bytes = file_size - offset < PGSIZE ? file_size - offset : PGSIZE;
+      zero_bytes = PGSIZE - read_bytes;
+      
+      /* Allocate vm_entry */
+      vme = malloc (sizeof (struct vm_entry));
+      if (vme == NULL)
+        {
+          /* Cleanup: remove all vm_entries we've created so far */
+          void *cleanup_addr = addr;
+          while (cleanup_addr < vaddr)
+            {
+              struct vm_entry *cleanup_vme = vm_find (&cur->vm, cleanup_addr);
+              if (cleanup_vme != NULL)
+                {
+                  vm_delete (&cur->vm, cleanup_vme);
+                  if (cleanup_vme->file != NULL)
+                    {
+                      lock_acquire (&filesys_lock);
+                      file_close (cleanup_vme->file);
+                      lock_release (&filesys_lock);
+                    }
+                  free (cleanup_vme);
+                }
+              cleanup_addr = (uint8_t *) cleanup_addr + PGSIZE;
+            }
+          /* Close the mapped file */
+          lock_acquire (&filesys_lock);
+          file_close (mapped_file);
+          lock_release (&filesys_lock);
+          return MAP_FAILED;
+        }
+      
+      /* Initialize vm_entry */
+      vme->type = VM_FILE;
+      vme->vaddr = vaddr;
+      vme->writable = true;
+      vme->is_loaded = false;
+      vme->pinned = false;
+      vme->file = mapped_file;  /* All pages share the same file reference */
+      vme->offset = offset;
+      vme->read_bytes = read_bytes;
+      vme->zero_bytes = zero_bytes;
+      vme->swap_slot = SWAP_SLOT_NONE;
+      
+      /* Insert into supplemental page table */
+      if (!vm_insert (&cur->vm, vme))
+        {
+          /* Failed to insert - entry might already exist */
+          free (vme);
+          /* Cleanup: remove all vm_entries we've created so far */
+          void *cleanup_addr = addr;
+          while (cleanup_addr < vaddr)
+            {
+              struct vm_entry *cleanup_vme = vm_find (&cur->vm, cleanup_addr);
+              if (cleanup_vme != NULL)
+                {
+                  vm_delete (&cur->vm, cleanup_vme);
+                  free (cleanup_vme);
+                }
+              cleanup_addr = (uint8_t *) cleanup_addr + PGSIZE;
+            }
+          /* Close the mapped file */
+          lock_acquire (&filesys_lock);
+          file_close (mapped_file);
+          lock_release (&filesys_lock);
+          return MAP_FAILED;
+        }
+      
+      /* Advance to next page */
+      vaddr = (uint8_t *) vaddr + PGSIZE;
+      offset += read_bytes;
+    }
+  
+  /* Return starting address as mapid */
+  return (mapid_t) addr;
+}
+
+/* Unmap a memory mapping */
+static void
+syscall_munmap (mapid_t mapid)
+{
+  struct thread *cur = thread_current ();
+  void *start_addr = (void *) mapid;
+  struct vm_entry *vme;
+  void *kpage;
+  bool dirty;
+  struct file *mapped_file = NULL;
+  bool file_closed = false;
+  struct hash_iterator i;
+  struct vm_entry *to_unmap[256];  /* Array to collect vm_entries (reasonable limit) */
+  int unmap_count = 0;
+  int j;
+  
+  /* First pass: find the mapping and identify the file */
+  hash_first (&i, &cur->vm);
+  while (hash_next (&i))
+    {
+      vme = hash_entry (hash_cur (&i), struct vm_entry, hash_elem);
+      
+      /* Check if this vm_entry belongs to the mapping */
+      if (vme->type == VM_FILE && vme->vaddr == start_addr)
+        {
+          /* Found the start of the mapping - remember the file */
+          mapped_file = vme->file;
+          break;
+        }
+    }
+  
+  /* If mapping not found, return */
+  if (mapped_file == NULL)
+    return;
+  
+  /* Second pass: collect all vm_entries in the mapping */
+  hash_first (&i, &cur->vm);
+  while (hash_next (&i))
+    {
+      vme = hash_entry (hash_cur (&i), struct vm_entry, hash_elem);
+      
+      /* Check if this vm_entry belongs to the mapping */
+      if (vme->type == VM_FILE && vme->file == mapped_file && vme->vaddr >= start_addr)
+        {
+          /* Add to array for processing */
+          if (unmap_count < 256)
+            to_unmap[unmap_count++] = vme;
+        }
+    }
+  
+  /* Third pass: unmap each vm_entry */
+  for (j = 0; j < unmap_count; j++)
+    {
+      vme = to_unmap[j];
+      
+      /* Check if page is loaded */
+      if (vme->is_loaded)
+        {
+          /* Get physical page */
+          kpage = pagedir_get_page (cur->pagedir, vme->vaddr);
+          
+          if (kpage != NULL)
+            {
+              /* Check if page is dirty */
+              dirty = pagedir_is_dirty (cur->pagedir, vme->vaddr);
+              
+              if (dirty && vme->file != NULL)
+                {
+                  /* Write back to file */
+                  lock_acquire (&filesys_lock);
+                  file_write_at (vme->file, kpage, vme->read_bytes, vme->offset);
+                  lock_release (&filesys_lock);
+                }
+              
+              /* Clear page mapping */
+              pagedir_clear_page (cur->pagedir, vme->vaddr);
+              
+              /* Remove frame */
+              remove_frame_from_table (kpage);
+            }
+        }
+      
+      /* Delete from SPT */
+      vm_delete (&cur->vm, vme);
+      
+      /* Close file once (all pages share the same file reference) */
+      if (!file_closed && vme->file != NULL)
+        {
+          lock_acquire (&filesys_lock);
+          file_close (vme->file);
+          lock_release (&filesys_lock);
+          file_closed = true;
+        }
+      
+      /* Free vm_entry struct */
+      free (vme);
+    }
 }

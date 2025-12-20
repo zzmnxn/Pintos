@@ -262,6 +262,9 @@ evict_frame (void)
   /* Mark as not loaded before releasing the lock to block re-entry faults. */
   victim_vme->is_loaded = false;
 
+  /* Pin the vm_entry to prevent concurrent access during eviction. */
+  victim_vme->pinned = true;
+
   /* Clear page mapping first (while holding lock). */
   pagedir_clear_page (pd, vaddr);
 
@@ -311,6 +314,9 @@ evict_frame (void)
 
   /* Clear page contents before reuse. */
   memset (kpage, 0, PGSIZE);
+
+  /* Unpin the vm_entry after swap operations are complete. */
+  victim_vme->pinned = false;
 
   return kpage;
 }

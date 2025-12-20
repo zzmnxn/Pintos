@@ -22,6 +22,9 @@
 #include "vm/page.h"
 #include "vm/frame.h"
 
+/* External filesystem lock from syscall.c */
+extern struct lock filesys_lock;
+
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
 
@@ -282,6 +285,86 @@ process_exit (void)
   pd = cur->pagedir;
   if (pd != NULL) 
     {
+      /* Unmap all mmap regions with write-back before destroying SPT */
+      struct hash_iterator i;
+      struct vm_entry *vme;
+      void *kpage;
+      bool dirty;
+      struct file *closed_files[64];  /* Track up to 64 unique files */
+      int closed_count = 0;
+      int j;
+      bool already_closed;
+      
+      /* First pass: write back dirty pages and clear mappings */
+      hash_first (&i, &cur->vm);
+      while (hash_next (&i))
+        {
+          vme = hash_entry (hash_cur (&i), struct vm_entry, hash_elem);
+          
+          if (vme->type == VM_FILE)
+            {
+              /* Check if page is loaded */
+              if (vme->is_loaded)
+                {
+                  /* Get physical page */
+                  kpage = pagedir_get_page (pd, vme->vaddr);
+                  
+                  if (kpage != NULL)
+                    {
+                      /* Check if page is dirty */
+                      dirty = pagedir_is_dirty (pd, vme->vaddr);
+                      
+                      if (dirty && vme->file != NULL)
+                        {
+                          /* Write back to file */
+                          lock_acquire (&filesys_lock);
+                          file_write_at (vme->file, kpage, vme->read_bytes, vme->offset);
+                          lock_release (&filesys_lock);
+                        }
+                      
+                      /* Clear page mapping */
+                      pagedir_clear_page (pd, vme->vaddr);
+                      
+                      /* Remove frame */
+                      remove_frame_from_table (kpage);
+                    }
+                }
+            }
+        }
+      
+      /* Second pass: close unique mmap files */
+      hash_first (&i, &cur->vm);
+      while (hash_next (&i))
+        {
+          vme = hash_entry (hash_cur (&i), struct vm_entry, hash_elem);
+          
+          if (vme->type == VM_FILE && vme->file != NULL)
+            {
+              /* Check if we've already closed this file */
+              already_closed = false;
+              for (j = 0; j < closed_count; j++)
+                {
+                  if (closed_files[j] == vme->file)
+                    {
+                      already_closed = true;
+                      break;
+                    }
+                }
+              
+              if (!already_closed)
+                {
+                  /* Close the file */
+                  lock_acquire (&filesys_lock);
+                  file_close (vme->file);
+                  lock_release (&filesys_lock);
+                  
+                  /* Track it */
+                  if (closed_count < 64)
+                    closed_files[closed_count++] = vme->file;
+                }
+            }
+        }
+      
       /* Destroy the supplemental page table.
          This must be done before destroying the page directory
          because vm_entry_destructor needs the pagedir to look up frames. */
@@ -640,6 +723,7 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       vme->vaddr = upage;
       vme->writable = writable;
       vme->is_loaded = false;
+      vme->pinned = false;
       vme->file = file;  /* Use file_reopen to get a separate reference if needed */
       vme->offset = current_offset;
       vme->read_bytes = page_read_bytes;
@@ -682,6 +766,7 @@ setup_stack (void **esp)
   vme->vaddr = upage;
   vme->writable = true;
   vme->is_loaded = true;  /* Will be loaded immediately */
+  vme->pinned = false;
   vme->file = NULL;
   vme->offset = 0;
   vme->read_bytes = 0;

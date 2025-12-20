@@ -181,6 +181,13 @@ page_fault (struct intr_frame *f)
   /* Find the vm_entry in the supplemental page table. */
   struct vm_entry *vme = vm_find (&cur->vm, page_addr);
   
+  /* Check if page is pinned (being evicted). */
+  if (vme != NULL && vme->pinned)
+    {
+      /* Page is currently being evicted - terminate process */
+      exit_process_on_fault ();
+    }
+  
   if (vme == NULL)
     {
       /* No vm_entry found - check if this is a stack growth case */
@@ -219,6 +226,7 @@ page_fault (struct intr_frame *f)
           vme->vaddr = page_addr;
           vme->writable = true;
           vme->is_loaded = false;
+          vme->pinned = false;
           vme->file = NULL;
           vme->offset = 0;
           vme->read_bytes = 0;
