@@ -241,9 +241,11 @@ syscall_handler (struct intr_frame *f)
       {
         int fd = *(int *) (f->esp + 4);
         void *addr = *(void **) (f->esp + 8);
-        if (!check_user_address (addr))
+        /* Simple address validation without mapping check */
+        if (addr == NULL || !is_user_vaddr (addr) || pg_ofs (addr) != 0)
           {
-            syscall_exit (-1);
+            f->eax = MAP_FAILED;
+            break;
           }
         f->eax = syscall_mmap (fd, addr);
       }
@@ -1043,6 +1045,9 @@ syscall_munmap (mapid_t mapid)
           
           if (kpage != NULL)
             {
+              /* Pin the page to prevent eviction during write-back */
+              vme->pinned = true;
+              
               /* Check if page is dirty */
               dirty = pagedir_is_dirty (cur->pagedir, vme->vaddr);
               
@@ -1057,6 +1062,9 @@ syscall_munmap (mapid_t mapid)
                   /* Reset dirty bit after write-back */
                   pagedir_set_dirty (cur->pagedir, vme->vaddr, false);
                 }
+              
+              /* Unpin the page after write-back is complete */
+              vme->pinned = false;
               
               /* Clear page mapping */
               pagedir_clear_page (cur->pagedir, vme->vaddr);

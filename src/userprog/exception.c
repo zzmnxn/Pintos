@@ -185,8 +185,9 @@ page_fault (struct intr_frame *f)
   /* Check if page is pinned (being evicted). */
   if (vme != NULL && vme->pinned)
     {
-      /* Page is currently being evicted - terminate process */
-      exit_process_on_fault ();
+      /* Page is currently being evicted - yield to let eviction complete */
+      thread_yield ();
+      return;
     }
   
   if (vme == NULL)
@@ -253,29 +254,16 @@ page_fault (struct intr_frame *f)
         }
     }
 
-  /* Check if page is already loaded. */
-  if (vme->is_loaded)
-    {
-      //printf ("PF: Page already loaded - checking permissions\n");
-      /* Page is already loaded - should not fault unless there's a rights violation */
-      if (!not_present && write && !vme->writable)
-        {
-          /* Writing to read-only page */
-          exit_process_on_fault ();
-        }
-      /* Otherwise, this shouldn't happen - terminate */
-      exit_process_on_fault ();
-    }
-
-  /* Check write permission. */
+  /* Permission check: must happen before checking is_loaded */
   if (write && !vme->writable)
     {
       /* Attempting to write to read-only page */
-      cur->exit_status = -1;
-      cur->has_exited = true;
-      //printf ("%s: exit(-1)\n", cur->name);
-      thread_exit ();
+      exit_process_on_fault ();
     }
+
+  /* Race condition: if page already loaded by another thread, just return */
+  if (vme->is_loaded)
+    return;
 
   /* Allocate a frame for this page. */
   //printf ("PF: 4. Allocating frame\n");

@@ -271,35 +271,11 @@ evict_frame (void)
   /* Release lock before any I/O operations to avoid blocking other threads. */
   lock_release (&frame_lock);
 
-  /* 1. Dirty Check & Write-back */
-  dirty = pagedir_is_dirty (pd, vaddr);
-
-  if (vme_type == VM_FILE)
-    {
-      /* VM_FILE 타입 페이지: Dirty 상태 확인 및 Write-back */
-      if (dirty)
-        {
-          /* Dirty 상태라면 파일에 변경 내용을 저장 */
-          if (victim_vme->file != NULL)
-            {
-              bool lock_held = filesys_lock_held_by_current_thread ();
-              if (!lock_held)
-                lock_acquire (&filesys_lock);
-              
-              file_write_at (victim_vme->file, kpage, victim_vme->read_bytes, victim_vme->offset);
-              
-              if (!lock_held)
-                lock_release (&filesys_lock);
-            }
-        }
-      /* Dirty가 아니면 아무 작업도 하지 않음 (그냥 해제) */
-      
-      /* VM_FILE 타입은 절대 swap_out을 호출하면 안 됨 */
-      victim_vme->swap_slot = SWAP_SLOT_NONE;
-    }
-  else
+  /* Handle VM_ANON and VM_BIN: check dirty early and swap out if needed */
+  if (vme_type != VM_FILE)
     {
       /* VM_ANON 또는 VM_BIN: Dirty하거나 VM_ANON이면 Swap Out */
+      dirty = pagedir_is_dirty (pd, vaddr);
       if (dirty || vme_type == VM_ANON)
         {
           /* Swap out the page */
@@ -316,8 +292,35 @@ evict_frame (void)
           victim_vme->swap_slot = SWAP_SLOT_NONE;
         }
     }
+  else
+    {
+      /* VM_FILE 타입은 절대 swap_out을 호출하면 안 됨 */
+      victim_vme->swap_slot = SWAP_SLOT_NONE;
+    }
 
-  /* 2. is_loaded false 설정 및 페이지 테이블에서 제거 */
+  /* For VM_FILE pages: check dirty bit immediately before clearing page mapping */
+  /* This is critical: dirty bit must be checked while page is still mapped */
+  if (vme_type == VM_FILE)
+    {
+      /* Check dirty bit right before clearing - hardware info is lost after clear */
+      dirty = pagedir_is_dirty (pd, vaddr);
+      
+      if (dirty && victim_vme->file != NULL)
+        {
+          /* Write back dirty page to file with filesys_lock protection */
+          bool lock_held = filesys_lock_held_by_current_thread ();
+          if (!lock_held)
+            lock_acquire (&filesys_lock);
+          
+          /* Write exactly read_bytes, not full PGSIZE */
+          file_write_at (victim_vme->file, kpage, victim_vme->read_bytes, victim_vme->offset);
+          
+          if (!lock_held)
+            lock_release (&filesys_lock);
+        }
+    }
+
+  /* Mark page as not loaded and clear page mapping */
   victim_vme->is_loaded = false;
   pagedir_clear_page (pd, vaddr);
 
