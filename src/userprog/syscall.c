@@ -1061,9 +1061,11 @@ syscall_munmap (mapid_t mapid)
               /* Clear page mapping */
               pagedir_clear_page (cur->pagedir, vme->vaddr);
               
+              /* Mark as not loaded */
+              vme->is_loaded = false;
+              
               /* Remove frame from table and free physical memory */
-              remove_frame_from_table (kpage);
-              palloc_free_page (kpage);
+              free_frame (kpage);
             }
         }
       
