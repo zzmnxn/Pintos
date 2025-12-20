@@ -189,6 +189,7 @@ vm_load_page (struct vm_entry *vme, void *kpage)
         if (vme->type == VM_FILE)
           {
             vme->is_loaded = true;
+            /* Dirty 비트를 false로 명시적으로 초기화 */
             if (cur->pagedir != NULL)
               pagedir_set_dirty (cur->pagedir, vme->vaddr, false);
           }

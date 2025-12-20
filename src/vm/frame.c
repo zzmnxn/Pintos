@@ -276,18 +276,25 @@ evict_frame (void)
 
   if (vme_type == VM_FILE)
     {
-      /* Mmap 파일인 경우: Dirty하면 파일에 쓰고, 스왑은 안 함 */
-      if (dirty && victim_vme->file != NULL)
+      /* VM_FILE 타입 페이지: Dirty 상태 확인 및 Write-back */
+      if (dirty)
         {
-          bool lock_held = filesys_lock_held_by_current_thread ();
-          if (!lock_held)
-            lock_acquire (&filesys_lock);
-          
-          file_write_at (victim_vme->file, kpage, victim_vme->read_bytes, victim_vme->offset);
-          
-          if (!lock_held)
-            lock_release (&filesys_lock);
+          /* Dirty 상태라면 파일에 변경 내용을 저장 */
+          if (victim_vme->file != NULL)
+            {
+              bool lock_held = filesys_lock_held_by_current_thread ();
+              if (!lock_held)
+                lock_acquire (&filesys_lock);
+              
+              file_write_at (victim_vme->file, kpage, victim_vme->read_bytes, victim_vme->offset);
+              
+              if (!lock_held)
+                lock_release (&filesys_lock);
+            }
         }
+      /* Dirty가 아니면 아무 작업도 하지 않음 (그냥 해제) */
+      
+      /* VM_FILE 타입은 절대 swap_out을 호출하면 안 됨 */
       victim_vme->swap_slot = SWAP_SLOT_NONE;
     }
   else
@@ -310,7 +317,7 @@ evict_frame (void)
         }
     }
 
-  /* 2. is_loaded false 설정 및 메모리 해제 */
+  /* 2. is_loaded false 설정 및 페이지 테이블에서 제거 */
   victim_vme->is_loaded = false;
   pagedir_clear_page (pd, vaddr);
 
@@ -322,7 +329,7 @@ evict_frame (void)
   /* Free the frame_entry structure. */
   free (victim_fe);
 
-  /* Clear page contents before reuse. */
+  /* Clear page contents before reuse (physical page will be reused, not freed). */
   memset (kpage, 0, PGSIZE);
 
   /* Unpin the vm_entry after swap operations are complete. */
