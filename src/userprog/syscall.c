@@ -959,9 +959,10 @@ syscall_munmap (mapid_t mapid)
               /* Check if page is dirty */
               dirty = pagedir_is_dirty (cur->pagedir, vme->vaddr);
               
-              if (dirty && vme->file != NULL)
+              /* Write-back for VM_FILE type pages (mmap files) */
+              if (vme->type == VM_FILE && dirty && vme->file != NULL)
                 {
-                  /* Write back to file */
+                  /* Write back dirty page to file (with lock protection) */
                   lock_acquire (&filesys_lock);
                   file_write_at (vme->file, kpage, vme->read_bytes, vme->offset);
                   lock_release (&filesys_lock);

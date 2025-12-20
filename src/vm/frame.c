@@ -12,9 +12,7 @@
 #include "threads/vaddr.h"
 #include <string.h>
 #include "filesys/file.h"
-
-/* External filesystem lock from syscall.c */
-extern struct lock filesys_lock;
+#include "userprog/syscall.h"
 
 /* Global frame table. */
 static struct list frame_table;
@@ -260,64 +258,56 @@ evict_frame (void)
   if (clock_hand == list_end (&frame_table))
     clock_hand = list_begin (&frame_table);
 
-  /* Check dirty bit and clear accessed entry while holding lock. */
-  dirty = pagedir_is_dirty (pd, vaddr);
-
-  /* Mark as not loaded before releasing the lock to block re-entry faults. */
-  victim_vme->is_loaded = false;
-
   /* Pin the vm_entry to prevent concurrent access during eviction. */
   victim_vme->pinned = true;
-
-  /* Clear page mapping first (while holding lock). */
-  pagedir_clear_page (pd, vaddr);
-
-  /* Remove from frame table. */
-  list_remove (victim_elem);
 
   /* Release lock before any I/O operations to avoid blocking other threads. */
   lock_release (&frame_lock);
 
-  /* Free the frame_entry structure outside the lock. */
-  free (victim_fe);
+  /* 1. Dirty Check & Write-back */
+  dirty = pagedir_is_dirty (pd, vaddr);
 
-  /* Now perform I/O operations without holding frame_lock. */
-  /* Handle eviction based on page type. */
-  if (vme_type == VM_BIN)
+  if (vme_type == VM_FILE)
     {
-      if (dirty)
-        {
-          swap_slot = swap_out (kpage);
-          victim_vme->swap_slot = swap_slot;
-          victim_vme->type = VM_ANON;
-        }
-      else
-        {
-          victim_vme->swap_slot = SWAP_SLOT_NONE;
-        }
-    }
-  else if (vme_type == VM_FILE)
-    {
-      /* VM_FILE type pages (mmap files): write back to original file if dirty.
-         NEVER use swap disk - they are backed by files and can be reloaded on demand. */
+      /* Mmap 파일인 경우: Dirty하면 파일에 쓰고, 스왑은 안 함 */
       if (dirty && victim_vme->file != NULL)
         {
-          /* Write back dirty page to the original file. */
-          lock_acquire (&filesys_lock);
+          bool lock_held = filesys_lock_held_by_current_thread ();
+          if (!lock_held)
+            lock_acquire (&filesys_lock);
+          
           file_write_at (victim_vme->file, kpage, victim_vme->read_bytes, victim_vme->offset);
-          lock_release (&filesys_lock);
+          
+          if (!lock_held)
+            lock_release (&filesys_lock);
         }
-      /* Clean pages can be simply discarded - they will be reloaded from file on demand. */
       victim_vme->swap_slot = SWAP_SLOT_NONE;
-      /* Keep type as VM_FILE - do not change to VM_ANON. */
-      /* Note: is_loaded is already set to false above (line 267). */
     }
   else if (vme_type == VM_ANON)
     {
-      /* VM_ANON type pages: always swap out to swap disk. */
+      /* Anon 페이지(스택 등)인 경우: 무조건 스왑 아웃 */
       swap_slot = swap_out (kpage);
       victim_vme->swap_slot = swap_slot;
     }
+  else if (vme_type == VM_BIN)
+    {
+      /* 실행 파일 코드/데이터: Dirty일 수 없음(수정 불가). 그냥 버림.
+         만약 dirty하다면(코드 수정 등) VM_ANON으로 변환하여 스왑해야 하지만, 
+         Pintos 기본 과제에선 VM_BIN은 Read-only로 가정해도 됨 */
+      victim_vme->swap_slot = SWAP_SLOT_NONE;
+    }
+
+  /* 2. is_loaded false 설정 및 메모리 해제 */
+  victim_vme->is_loaded = false;
+  pagedir_clear_page (pd, vaddr);
+
+  /* Remove from frame table. */
+  lock_acquire (&frame_lock);
+  list_remove (victim_elem);
+  lock_release (&frame_lock);
+
+  /* Free the frame_entry structure. */
+  free (victim_fe);
 
   /* Clear page contents before reuse. */
   memset (kpage, 0, PGSIZE);

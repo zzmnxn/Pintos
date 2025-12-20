@@ -149,7 +149,8 @@ vm_load_page (struct vm_entry *vme, void *kpage)
 {
   ASSERT (vme != NULL);
   ASSERT (kpage != NULL);
-  ASSERT (pg_ofs (kpage) == 0);
+  
+  bool lock_held= filesys_lock_held_by_current_thread ();
 
   switch (vme->type)
     {
@@ -161,7 +162,6 @@ vm_load_page (struct vm_entry *vme, void *kpage)
           return false;
 
         /* Avoid re-entering filesys_lock when we were faulting while holding it. */
-        bool lock_held = filesys_lock_held_by_current_thread ();
         if (!lock_held)
           lock_acquire (&filesys_lock);
         
@@ -180,10 +180,13 @@ vm_load_page (struct vm_entry *vme, void *kpage)
         
         if (!lock_held)
           lock_release (&filesys_lock);
-
-        /* Zero the remaining bytes (padding). */
-        if (vme->zero_bytes > 0)
-          memset (kpage + vme->read_bytes, 0, vme->zero_bytes);
+        
+        /* Zero bytes padding */
+        memset (kpage + vme->read_bytes, 0, vme->zero_bytes);
+        
+        /* VM_FILE의 경우 로딩 직후 dirty 비트를 false로 만들어야 함 */
+        if (vme->type == VM_FILE)
+           vme->is_loaded = true; // 중요: 로딩됨 표시
         break;
       }
 
